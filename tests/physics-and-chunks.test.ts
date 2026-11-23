@@ -1,0 +1,76 @@
+import { describe, expect, it } from 'vitest';
+import { ChunkGrid } from '../src/engine/ChunkManager';
+import { PhysicsWorld } from '../src/engine/Physics';
+import { CHUNK_SIZE, WORLD_SIZE } from '../src/types/game';
+
+describe('ChunkGrid (500x500m Cyber-Almaty)', () => {
+  it('divides 500x500m into a 10x10 grid of 50x50m chunks', () => {
+    const grid = new ChunkGrid(WORLD_SIZE, CHUNK_SIZE);
+    expect(grid.gridCount).toBe(10);
+    expect(grid.getTotalChunks()).toBe(100);
+
+    expect(grid.worldToChunk(-250, -250)).toEqual({ cx: 0, cz: 0, key: '0,0' });
+    expect(grid.worldToChunk(0, 0)).toEqual({ cx: 5, cz: 5, key: '5,5' });
+    expect(grid.worldToChunk(249, 249)).toEqual({ cx: 9, cz: 9, key: '9,9' });
+    // Clamps out-of-bounds cleanly
+    expect(grid.worldToChunk(999, -999)).toEqual({ cx: 9, cz: 0, key: '9,0' });
+  });
+
+  it('computes active chunk radius accurately at center and corners', () => {
+    const grid = new ChunkGrid(500, 50);
+    const centerRender = grid.getActiveKeys(0, 0, 3);
+    expect(centerRender.size).toBe(49); // 7x7 around (5,5)
+
+    const cornerRender = grid.getActiveKeys(-240, -240, 2);
+    expect(cornerRender.size).toBe(9); // 3x3 at corner (0,0)
+    expect(cornerRender.has('0,0')).toBe(true);
+    expect(cornerRender.has('2,2')).toBe(true);
+    expect(cornerRender.has('3,3')).toBe(false);
+  });
+});
+
+describe('PhysicsWorld with Chunk Filtering & Vehicle Collisions', () => {
+  it('slides player smoothly along AABB walls and respects active chunks', () => {
+    const physics = new PhysicsWorld();
+    physics.addBox('wall_chunk_0_0', -220, 4, -220, 10, 8, 10, { chunkKey: '0,0' });
+
+    // Chunk 0,0 active -> blocks movement
+    physics.setActiveChunks(new Set(['0,0']));
+    const blocked = physics.resolveCylinderMove(
+      { x: -226, y: 0, z: -220 },
+      -222,
+      -220,
+      0.45,
+      0,
+      1.8,
+    );
+    expect(blocked.collided).toBe(true);
+    expect(blocked.x).toBeLessThan(-225.4);
+
+    // Chunk 0,0 unloaded -> collider skipped
+    physics.setActiveChunks(new Set(['5,5']));
+    const free = physics.resolveCylinderMove(
+      { x: -226, y: 0, z: -220 },
+      -222,
+      -220,
+      0.45,
+      0,
+      1.8,
+    );
+    expect(free.collided).toBe(false);
+    expect(free.x).toBeCloseTo(-222, 3);
+  });
+
+  it('raycasts bullets and computes line of sight accurately', () => {
+    const physics = new PhysicsWorld();
+    physics.addBox('pillar', 0, 2, -10, 4, 4, 2);
+
+    const hit = physics.raycastBullets({ x: 0, y: 1.5, z: 0 }, { x: 0, y: 0, z: -1 }, 50);
+    expect(hit.hit).toBe(true);
+    expect(hit.colliderId).toBe('pillar');
+    expect(hit.distance).toBeCloseTo(9, 2);
+
+    expect(physics.hasLineOfSight({ x: 0, y: 1.5, z: 0 }, { x: 0, y: 1.5, z: -20 })).toBe(false);
+    expect(physics.hasLineOfSight({ x: 5, y: 1.5, z: 0 }, { x: 5, y: 1.5, z: -20 })).toBe(true);
+  });
+});

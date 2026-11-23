@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BOLT 2 // КИБЕР-АЛМАТЫ</title>
+  </head>
+  <body>
+    <div id="game-viewport"></div>
+
+    <!-- IN-GAME HUD -->
+    <div id="hud-layer" class="hidden">
+      <!-- Top-Left: Minimap + District + Chunk Telemetry -->
+      <div class="hud-topleft">
+        <div class="minimap-frame">
+          <canvas id="minimap-canvas" width="164" height="164"></canvas>
+          <div id="chunk-badge" class="chunk-badge">ЧАНК 5,5 • 49/100</div>
+        </div>
+        <div class="district-box">
+          <div id="district-name" class="district-name">ПРОСПЕКТ АБАЯ // ЕБЛАНХАНА</div>
+          <div id="district-sub" class="district-sub">ЦЕНТРАЛЬНЫЙ ХАБ // АНТИКАФЕ «МАРУМ»</div>
+        </div>
+      </div>
+
+      <!-- Top-Center: Objective + Boss Bar -->
+      <div class="hud-topcenter">
+        <div id="act-banner" class="act-banner hidden"></div>
+        <div id="objective-box" class="objective-box">
+          <span class="obj-tag">ЦЕЛЬ</span>
+          <span id="objective-text">ИССЛЕДУЙТЕ КИБЕР-АЛМАТЫ</span>
+        </div>
+        <div id="boss-bar" class="boss-bar hidden">
+          <div class="boss-header">
+            <span id="boss-name">РИХАРД СМЭШЕР // ОМЕГА-КИБОРГ</span>
+            <span id="boss-phase">ФАЗА I</span>
+          </div>
+          <div class="boss-track">
+            <div id="boss-fill" class="boss-fill" style="width: 100%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top-Right: Economy & Quick Keys -->
+      <div class="hud-topright">
+        <div class="econ-row">
+          <span class="tenge-badge"><strong id="tenge-val">1500</strong> ₸</span>
+          <span class="cred-badge">REP <strong id="cred-val">1</strong></span>
+        </div>
+        <div class="quick-hints">
+          <span>[M] Карта</span>
+          <span>[C] Кибер-Ахмед</span>
+          <span>[Q] Сандевистан</span>
+          <span>[Esc] Меню</span>
+        </div>
+      </div>
+
+      <!-- Center Crosshair + Hitmarker + Prompts -->
+      <div id="crosshair" class="crosshair">
+        <span class="ch-line ch-top"></span>
+        <span class="ch-line ch-bottom"></span>
+        <span class="ch-line ch-left"></span>
+        <span class="ch-line ch-right"></span>
+        <span class="ch-dot"></span>
+      </div>
+      <div id="hitmarker" class="hitmarker hidden"></div>
+
+      <div id="interact-prompt" class="interact-prompt hidden">[E] ВЗАИМОДЕЙСТВОВАТЬ</div>
+      <div id="relic-warning" class="relic-warning hidden">СБОЙ БИОЧИПА // КОНСТРУКТ: САМИР</div>
+
+      <!-- Vehicle Dashboard -->
+      <div id="vehicle-hud" class="vehicle-hud hidden">
+        <div class="veh-title">КИБЕР-АХМЕД AI // ТАКСИ</div>
+        <div class="veh-metrics">
+          <div class="veh-speed"><span id="veh-speed-val">0</span> <small>КМ/Ч</small></div>
+          <div class="veh-nitro-wrap">
+            <span class="veh-label">НИТРО [SHIFT]</span>
+            <div class="bar-track"><div id="veh-nitro-fill" class="bar-fill cyan" style="width: 100%"></div></div>
+          </div>
+        </div>
+        <div class="veh-controls">
+          <span>[WASD] Руль</span>
+          <span>[SPACE] Дрифт</span>
+          <span>[G] Автопилот</span>
+          <span>[V] Камера</span>
+          <span>[E] Выйти</span>
+        </div>
+      </div>
+
+      <!-- Subtitles & Dialogue Choices -->
+      <div id="subtitle-box" class="subtitle-box hidden">
+        <div class="sub-header">
+          <span id="sub-speaker" class="sub-speaker">САМИР</span>
+          <span id="sub-role" class="sub-role">ЦИФРОВОЙ КОНСТРУКТ</span>
+        </div>
+        <div id="sub-text" class="sub-text"></div>
+      </div>
+
+      <div id="choice-overlay" class="choice-overlay hidden">
+        <div id="choice-title" class="choice-title">СДЕЛАЙТЕ ВЫБОР</div>
+        <div id="choice-list" class="choice-list"></div>
+      </div>
+
+      <!-- Bottom-Left: Vitals & Cyberware -->
+      <div class="hud-bottomleft">
+        <div class="vital-row">
+          <span class="vital-label">HP</span>
+          <div class="bar-track"><div id="hp-fill" class="bar-fill red" style="width: 100%"></div></div>
+          <span id="hp-val" class="vital-num">100</span>
+        </div>
+        <div class="vital-row">
+          <span class="vital-label">БРН</span>
+          <div class="bar-track"><div id="armor-fill" class="bar-fill cyan" style="width: 100%"></div></div>
+          <span id="armor-val" class="vital-num">50</span>
+        </div>
+        <div class="vital-row">
+          <span class="vital-label">СНД [Q]</span>
+          <div class="bar-track"><div id="sandy-fill" class="bar-fill yellow" style="width: 100%"></div></div>
+          <span id="sandy-val" class="vital-num">100%</span>
+        </div>
+        <div class="maxdoc-pill">[X] MAXDOC: <strong id="maxdoc-val">3</strong></div>
+      </div>
+
+      <!-- Bottom-Right: Active Weapon & 5 Slots -->
+      <div class="hud-bottomright">
+        <div id="weapon-name" class="weapon-name">АЛАТАУ-19</div>
+        <div id="ammo-display" class="ammo-display">12 / 12</div>
+        <div id="weapon-slots" class="weapon-slots"></div>
+      </div>
+    </div>
+
+    <!-- TITLE SCREEN -->
+    <div id="title-screen" class="screen-overlay">
+      <div class="title-card">
+        <div class="title-tag">ПРЯМОЕ ПРОДОЛЖЕНИЕ BOLT (2026) // SEMI-OPEN WORLD 500×500М</div>
+        <h1 class="game-logo">BOLT 2 <span>// КИБЕР-АЛМАТЫ</span></h1>
+        <p class="title-desc">
+          Главный герой <strong>Аи (Амир)</strong>, цифровой конструкт <strong>Самира</strong> в голове,
+          Клинки Богомола, такси <strong>Кибер-Ахмед</strong>, антикафе «Марум» и финальный штурм
+          <strong>Маракулин Тауэр</strong>.
+        </p>
+
+        <div class="title-actions">
+          <button id="btn-start-campaign" class="cyber-btn primary">НАЧАТЬ КАМПАНИЮ (ПО СЦЕНАРИЮ)</button>
+          <button id="btn-start-freeroam" class="cyber-btn secondary">СВОБОДНЫЙ КИБЕР-АЛМАТЫ</button>
+          <button id="btn-open-chapters" class="cyber-btn ghost">ВЫБОР ГЛАВЫ</button>
+        </div>
+
+        <div id="chapter-picker" class="chapter-picker hidden"></div>
+
+        <div class="controls-grid">
+          <div><b>WASD + Space×2</b> — Паркур / Двойной прыжок</div>
+          <div><b>Shift / Q</b> — Рывок / Сандевистан</div>
+          <div><b>1–5 / Колесо</b> — Клинки Богомола, стволы, Malorian</div>
+          <div><b>ЛКМ / ПКМ / F</b> — Огонь / Прицел (Выпад) / Удар</div>
+          <div><b>C / E / G / V</b> — Вызов и вождение «Кибер-Ахмеда»</div>
+          <div><b>M / Tab</b> — Карта Кибер-Алматы и Заказы</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FULLSCREEN INTERACTIVE MAP (M / TAB) -->
+    <div id="map-screen" class="screen-overlay hidden">
+      <div class="modal-card map-modal">
+        <div class="modal-header">
+          <h2>КАРТА КИБЕР-АЛМАТЫ <span>500×500 М // СИСТЕМА ЧАНКОВ 10×10</span></h2>
+          <button id="btn-close-map" class="cyber-btn ghost small">ЗАКРЫТЬ [M]</button>
+        </div>
+        <div class="map-layout">
+          <div class="map-canvas-wrap">
+            <canvas id="fullmap-canvas" width="440" height="440"></canvas>
+            <div class="map-legend">
+              <span><i class="dot cyan"></i> Аи</span>
+              <span><i class="dot yellow"></i> Кибер-Ахмед</span>
+              <span><i class="dot pink"></i> Заказ / Сюжет</span>
+              <span><i class="dot red"></i> Враги</span>
+            </div>
+          </div>
+          <div class="map-sidebar">
+            <h3>БЫСТРОЕ ПЕРЕМЕЩЕНИЕ (КИБЕР-АХМЕД)</h3>
+            <div id="fast-travel-list" class="fast-travel-list"></div>
+            <h3>ЗАКАЗЫ ЕБЛАНХАНЫ</h3>
+            <div id="gig-list" class="gig-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIPPERDOC MODAL (MARUM) -->
+    <div id="ripperdoc-screen" class="screen-overlay hidden">
+      <div class="modal-card ripper-modal">
+        <div class="modal-header">
+          <h2>РИПЕРДОК «МАРУМА» <span>БАЛАНС: <b id="ripper-tenge">1500</b> ₸</span></h2>
+          <button id="btn-close-ripper" class="cyber-btn ghost small">ВЫЙТИ [ESC]</button>
+        </div>
+        <div id="ripper-items" class="ripper-items"></div>
+      </div>
+    </div>
+
+    <!-- PAUSE & SETTINGS OVERLAY -->
+    <div id="pause-screen" class="screen-overlay hidden">
+      <div class="modal-card pause-modal">
+        <h2>ПАУЗА // НАСТРОЙКИ</h2>
+        <div class="setting-row">
+          <label for="opt-sens">Чувствительность мыши</label>
+          <input id="opt-sens" type="range" min="0.4" max="2.2" step="0.1" value="1.0" />
+        </div>
+        <div class="setting-row">
+          <label for="opt-vol">Громкость аудио</label>
+          <input id="opt-vol" type="range" min="0" max="1" step="0.05" value="0.72" />
+        </div>
+        <div class="setting-row">
+          <label for="opt-censor">Цензура диалогов (смягчить мат из сценария)</label>
+          <input id="opt-censor" type="checkbox" />
+        </div>
+        <div class="pause-actions">
+          <button id="btn-resume" class="cyber-btn primary">ПРОДОЛЖИТЬ</button>
+          <button id="btn-checkpoint" class="cyber-btn secondary">ПЕРЕЗАПУСТИТЬ ЧЕКПОИНТ</button>
+          <button id="btn-to-title" class="cyber-btn ghost">В ГЛАВНОЕ МЕНЮ</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- CREDITS / ENDING SCREEN -->
+    <div id="credits-screen" class="screen-overlay hidden">
+      <div class="modal-card credits-modal">
+        <div id="ending-badge" class="title-tag">ФИНАЛ BOLT 2 // КИБЕР-АЛМАТЫ</div>
+        <h2 id="ending-title">ЛЕГЕНДА ЕБЛАНХАНЫ</h2>
+        <p id="ending-summary" class="title-desc"></p>
+        <div id="stats-grid" class="stats-grid"></div>
+        <div class="pause-actions">
+          <button id="btn-postgame-freeroam" class="cyber-btn primary">ПРОДОЛЖИТЬ В КИБЕР-АЛМАТЫ</button>
+          <button id="btn-credits-title" class="cyber-btn secondary">В ГЛАВНОЕ МЕНЮ</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
