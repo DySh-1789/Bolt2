@@ -20,7 +20,7 @@ export interface InputSnapshot {
   mapTogglePressed: boolean;
   weaponSlotKey: number | null; // 1..5
   wheelDelta: number;
-  choiceKey: '1' | '2' | null;
+  choiceKey: '1' | '2' | '3' | null;
   mouseDeltaX: number;
   mouseDeltaY: number;
 }
@@ -217,9 +217,10 @@ export class InputManager {
       (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) -
       (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0);
 
-    let choiceKey: '1' | '2' | null = null;
+    let choiceKey: '1' | '2' | '3' | null = null;
     if (this.justPressed.has('Digit1') || this.justPressed.has('Numpad1')) choiceKey = '1';
     else if (this.justPressed.has('Digit2') || this.justPressed.has('Numpad2')) choiceKey = '2';
+    else if (this.justPressed.has('Digit3') || this.justPressed.has('Numpad3')) choiceKey = '3';
 
     let weaponSlotKey: number | null = null;
     if (this.justPressed.has('Digit1')) weaponSlotKey = 1;

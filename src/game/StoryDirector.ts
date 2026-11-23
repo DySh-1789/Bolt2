@@ -4,7 +4,9 @@ import {
   createInitialRunStats,
   DISTRICTS,
   getDistrictAt,
+  type AssaultApproach,
   type CheckpointData,
+  type DialogueChoice,
   type DistrictId,
   type GameAct,
   type InteractablePoint,
@@ -34,11 +36,24 @@ import {
 } from './OpenWorldSystem';
 import {
   AKHMED_DRIVING_LINES,
+  BRANCH_RESPONSES,
+  BRANCHING_CHOICES,
+  clampAffinity,
   DISTRICT_SAMIR_BANTER,
   formatDialogueText,
+  getAssaultPlanChoices,
+  getBranchChoices,
+  getBranchResponseLines,
+  getCyberspaceFarewellLines,
   SPEAKER_META,
 } from './DialogueLibrary';
 import { HUD } from '../ui/HUD';
+
+interface QueuedLine {
+  speaker: SpeakerId;
+  text: string;
+  duration: number;
+}
 
 /**
  * Pure story act progression state machine (unit-testable without WebGL).
@@ -99,12 +114,29 @@ export class StoryDirector {
   private modalOpen: 'NONE' | 'MAP' | 'RIPPERDOC' = 'NONE';
   private censoredDialogue = false;
   private awaitingChoice = false;
+  private activeChoices: DialogueChoice[] = [];
+  private activeChoiceContext:
+    | 'NONE'
+    | 'ROOFTOP_PROLOGUE'
+    | 'MOTEL_ARTEM'
+    | 'ASSAULT_PLAN'
+    | 'SMASHER_EXECUTION'
+    | 'CYBERSPACE_ENDING'
+    | 'EGOR_CONTRACT' = 'NONE';
+
+  private dialogueQueue: QueuedLine[] = [];
+  private currentLineTimer = 0;
+
   private elapsedTotal = 0;
   private lastDistrictId: DistrictId | null = null;
   private activeObjectivePos: Vec3 | null = null;
   private chaseDronesRemaining = 0;
   private chaseWaveSpawned = false;
   private akhmedLineIdx = 0;
+  private towerSecurityHacked = false;
+  private ecgBeatTimer = 0;
+  private chokeBeatTimer = 0;
+  private targetLetterbox = 0;
 
   constructor(engine: Engine, viewport: HTMLElement) {
     this.engine = engine;
@@ -147,18 +179,71 @@ export class StoryDirector {
     this.enterTitleScene();
   }
 
-  private say(speaker: SpeakerId, rawText: string, duration = 4.6): void {
-    const meta = SPEAKER_META[speaker];
+  /**
+   * Bolt-1-style dialogue queue so cinematic multi-line exchanges play smoothly without colliding.
+   */
+  private queueLine(speaker: SpeakerId, rawText: string, duration = 4.4, interrupt = false): void {
+    const formatted = formatDialogueText(rawText, this.censoredDialogue);
+    if (interrupt) {
+      this.dialogueQueue = [];
+      this.currentLineTimer = 0;
+    }
+    this.dialogueQueue.push({ speaker, text: formatted, duration });
+    if (this.currentLineTimer <= 0) {
+      this.popNextDialogueLine();
+    }
+  }
+
+  private popNextDialogueLine(): void {
+    const next = this.dialogueQueue.shift();
+    if (!next) return;
+    const meta = SPEAKER_META[next.speaker];
     this.hud.showSubtitle({
-      speaker,
+      speaker: next.speaker,
       speakerName: meta.name,
       role: meta.role,
-      text: formatDialogueText(rawText, this.censoredDialogue),
-      duration,
+      text: next.text,
+      duration: next.duration,
     });
-    if (speaker === 'samir' || speaker === 'akhmed' || speaker === 'taisiya') {
+    this.currentLineTimer = next.duration + 0.18;
+    if (next.speaker === 'samir' || next.speaker === 'akhmed' || next.speaker === 'taisiya') {
       this.audio.playHoloChime();
     }
+  }
+
+  private updateDialogueQueue(dt: number): void {
+    if (this.currentLineTimer > 0) {
+      this.currentLineTimer -= dt;
+      if (this.currentLineTimer <= 0 && this.dialogueQueue.length > 0) {
+        this.popNextDialogueLine();
+      }
+    } else if (this.dialogueQueue.length > 0) {
+      this.popNextDialogueLine();
+    }
+  }
+
+  private clearDialogueQueue(): void {
+    this.dialogueQueue = [];
+    this.currentLineTimer = 0;
+    this.hud.clearSubtitle();
+  }
+
+  private presentChoices(
+    context: typeof this.activeChoiceContext,
+    title: string,
+    choices: DialogueChoice[],
+  ): void {
+    this.activeChoiceContext = context;
+    this.activeChoices = choices;
+    this.awaitingChoice = true;
+    this.input.exitPointerLock();
+    this.hud.showChoices(title, choices);
+  }
+
+  private adjustSamirAffinity(delta: number): void {
+    if (delta === 0) return;
+    this.stats.samirAffinity = clampAffinity(this.stats.samirAffinity + delta);
+    this.hud.setSamirSync(this.stats.samirAffinity);
   }
 
   private enterTitleScene(): void {
@@ -166,13 +251,25 @@ export class StoryDirector {
     this.paused = false;
     this.modalOpen = 'NONE';
     this.awaitingChoice = false;
+    this.activeChoiceContext = 'NONE';
+    this.targetLetterbox = 0;
+    this.clearDialogueQueue();
     this.input.exitPointerLock();
     this.weapons.setVisible(false);
     this.vehicle.setVisible(true);
     this.instances.setActiveInstance('NONE');
-    this.city.setStoryProps({ samirRooftop: true, samirJunkyard: false, artemCorpse: false, egorMarum: false });
-    this.engine.setAtmosphere(0x060a18, 0x090f24, 0.0036);
+    this.city.setStoryProps({
+      samirRooftop: true,
+      samirJunkyard: false,
+      artemCorpse: false,
+      egorMarum: false,
+      motelArtem: false,
+      motelBodyguard: false,
+    });
+    this.engine.setAtmosphere(0x060a18, 0x090f24, 0.0032);
     this.chunks.forceRefresh(0, 0, true, this.physics);
+    this.audio.setPaused(false);
+    this.audio.setSandevistanMode(false);
     this.audio.setMusicIntensity('title');
     this.hud.showScreen('TITLE');
   }
@@ -183,6 +280,7 @@ export class StoryDirector {
     this.player.state.resetFull(false);
     this.weapons.state.reset(['mantis_blades', 'alatau_pistol'], 'alatau_pistol');
     this.openWorld.reset();
+    this.towerSecurityHacked = false;
     this.enterAct('PROLOGUE_ROOFTOP');
   }
 
@@ -190,9 +288,10 @@ export class StoryDirector {
     this.audio.ensureStarted();
     this.stats = createInitialRunStats();
     this.player.state.resetFull(false);
-    this.player.state.addTenge(1500); // Starter 3000 ₸ for open world fun
+    this.player.state.addTenge(1500);
     this.weapons.state.reset(['mantis_blades', 'alatau_pistol', 'steppe_smg'], 'mantis_blades');
     this.openWorld.reset();
+    this.towerSecurityHacked = false;
     this.enterAct('OPEN_WORLD');
   }
 
@@ -201,6 +300,7 @@ export class StoryDirector {
     this.stats = createInitialRunStats();
     this.player.state.resetFull(false);
     this.openWorld.reset();
+    this.towerSecurityHacked = false;
     if (act === 'TOWER_ASSAULT' || act === 'SMASHER_BOSS' || act === 'HUYESHI_CYBERSPACE') {
       this.weapons.state.reset(
         ['mantis_blades', 'alatau_pistol', 'steppe_smg', 'buran_shotgun', 'malorian'],
@@ -220,10 +320,21 @@ export class StoryDirector {
     this.paused = false;
     this.modalOpen = 'NONE';
     this.awaitingChoice = false;
+    this.activeChoiceContext = 'NONE';
+    this.activeChoices = [];
+    this.targetLetterbox = 0;
+    this.clearDialogueQueue();
+    this.audio.setPaused(false);
+    this.audio.setSandevistanMode(false);
+    this.player.state.sandevistanActive = false;
+
     this.hud.hideChoices();
     this.hud.setBossBar(false);
+    this.hud.setHuyeshiProgress(false);
     this.hud.setRelicWarning(false);
     this.hud.setInteractPrompt(null);
+    this.hud.setCombatHudVisible(true);
+    this.hud.setSamirSync(this.stats.samirAffinity);
     this.hud.showScreen('HUD');
 
     this.enemies.clearZone();
@@ -241,30 +352,53 @@ export class StoryDirector {
     this.instances.setInteractableEnabled('heist_hide_closet', false);
     this.instances.setInteractableEnabled('heist_elevator_btn', false);
     this.instances.setInteractableEnabled('tower_elevator_down', false);
+    this.instances.setInteractableEnabled('tower_hack_security', false);
     this.instances.setInteractableEnabled('smasher_execute', false);
     this.instances.setInteractableEnabled('huyeshi_jack_in', false);
+    this.instances.setSupplyCrateUsed('tower_supply_lobby', false);
+    this.instances.setSupplyCrateUsed('tower_supply_arena', false);
 
+    // =========================================================================
+    // ACT 1: PROLOGUE ROOFTOP (Exact reconstruction of IMG-20261123-WA0011.jpg!)
+    // =========================================================================
     if (act === 'PROLOGUE_ROOFTOP') {
       this.instances.setActiveInstance('NONE');
-      this.city.setStoryProps({ samirRooftop: true, samirJunkyard: false, artemCorpse: false, egorMarum: false });
-      this.engine.setAtmosphere(0x070a18, 0x0b1024, 0.0032);
+      this.city.setStoryProps({
+        samirRooftop: true,
+        samirJunkyard: false,
+        artemCorpse: false,
+        egorMarum: false,
+        motelArtem: false,
+        motelBodyguard: false,
+      });
+      this.engine.setAtmosphere(0x060a18, 0x0a1124, 0.0028);
       this.chunks.forceRefresh(165, 165, true, this.physics);
-      this.player.teleport(167, 36, 167, Math.PI * 0.25, -0.05);
-      this.player.setMode('CINEMATIC');
+
+      const pose = this.city.getRooftopCameraPose();
+      this.player.teleport(pose.position.x, 36, pose.position.z, Math.PI * 0.25, -0.05);
+      this.player.setMode('ROOFTOP_SIT');
+      this.player.configureInteractiveCutscene(pose.position, pose.lookAt, pose.fov);
+
       this.weapons.setVisible(false);
       this.hud.setCrosshairVisible(false);
+      this.hud.setCombatHudVisible(false);
+      this.targetLetterbox = 0.55;
+
       this.hud.showActBanner('АКТ I // КРЫША КОК-ТОБЕ — ПРОЛОГ', 4.5);
-      this.hud.setObjective('ПОГОВОРИТЕ С САМИРОМ НА КРЫШЕ');
       this.audio.setMusicIntensity('almaty_night');
-      this.say(
-        'ai',
-        'Не знаешь какого друга послать насмерть? Благо у тебя есть один кент который уже мертв. Ты, я и Маракуя Тауэр — звучит как припевы в песнях Минтимера. Но оно того стоит.',
-        7.5,
+      this.queueLine(
+        'samir',
+        'Не знаешь какого друга послать насмерть? Благо у тебя есть один кент который уже мертв.',
+        4.6,
+        true,
       );
-      this.setCheckpoint(act, 167, 36, 167, Math.PI * 0.25);
+      this.setCheckpoint(act, pose.position.x, 36, pose.position.z, Math.PI * 0.25);
       return;
     }
 
+    // =========================================================================
+    // ACT 2: FLASHBACK HEIST (2 weeks ago — Rodion's 92nd-floor Penthouse)
+    // =========================================================================
     if (act === 'FLASHBACK_HEIST') {
       this.instances.setActiveInstance('PENTHOUSE');
       this.instances.penthouseElevator.reset();
@@ -274,7 +408,7 @@ export class StoryDirector {
       this.instances.biochipCase.visible = true;
       this.instances.penthouseSanzhar.group.visible = true;
       this.chunks.forceRefresh(0, 0, false, this.physics);
-      this.engine.setAtmosphere(0x090814, 0x120c1e, 0.009);
+      this.engine.setAtmosphere(0x080714, 0x110c1e, 0.0075);
       this.player.teleport(0, INSTANCE_Y.PENTHOUSE, 13, 0, 0);
       this.player.setMode('FREE');
       this.weapons.state.reset(['mantis_blades', 'alatau_pistol'], 'alatau_pistol');
@@ -283,17 +417,27 @@ export class StoryDirector {
       this.instances.setInteractableEnabled('heist_steal_biochip', true);
       this.hud.showActBanner('2 НЕДЕЛИ НАЗАД // ПЕНТХАУС МАРАКУЛИН ТАУЭР', 5.0);
       this.hud.setObjective('УКРАДИТЕ БИОЧИП ИЗ НОМЕРА РОДИОНА МАРАКУЛИНА [E]');
-      this.audio.setMusicIntensity('almaty_night');
-      this.say('sanzhar', 'Аи, мы внутри номера Родиона! Артём ждёт биочип — хватай кейс на столе и валим!', 5.2);
+      this.audio.setMusicIntensity('ambient');
+      this.queueLine(
+        'sanzhar',
+        'Аи, мы в элитном номере Родиона Маракулина! Артём ждёт биочип — бери кейс на столе и уходим.',
+        5.0,
+        true,
+      );
       this.setCheckpoint(act, 0, INSTANCE_Y.PENTHOUSE, 13, 0);
       this.input.requestPointerLock();
       return;
     }
 
+    // =========================================================================
+    // ACT 3: FLASHBACK CHASE (Inside 3D Cyber-Akhmed cabin with Sanzhar!)
+    // =========================================================================
     if (act === 'FLASHBACK_CHASE') {
       this.instances.setActiveInstance('CHASE');
+      this.instances.setChaseSanzharWounded(false);
+      this.instances.setChaseBiochipVisible(false);
       this.chunks.forceRefresh(0, 0, false, this.physics);
-      this.engine.setAtmosphere(0x060918, 0x0b1024, 0.0055);
+      this.engine.setAtmosphere(0x050918, 0x0a1024, 0.0048);
       this.player.teleport(0, INSTANCE_Y.CHASE + 0.5, 4, 0, 0);
       this.player.setMode('CHASE_PASSENGER');
       this.weapons.state.equip('alatau_pistol');
@@ -304,10 +448,11 @@ export class StoryDirector {
       this.hud.showActBanner('АКТ III // ПОГОНЯ В ТАКСИ «КИБЕР-АХМЕД»', 4.5);
       this.hud.setObjective('ОТСТРЕЛИВАЙТЕСЬ ОТ КОРПО-ДРОНОВ ИЗ ОКНА ТАКСИ (4 ДРОНА)');
       this.audio.setMusicIntensity('chase');
-      this.say(
+      this.queueLine(
         'akhmed',
         'Кибер-Ахмед на связи! Врубаю боевой режим! Аи, сними дроны с хвоста, пока я вывожу нас на проспект Абая!',
         5.0,
+        true,
       );
       this.enemies.spawnWave([
         { id: 'chase_d1', archetype: 'drone', zoneId: 'chase', x: -7, y: INSTANCE_Y.CHASE + 1.5, z: -18, hp: 55 },
@@ -321,54 +466,92 @@ export class StoryDirector {
       return;
     }
 
+    // =========================================================================
+    // ACT 4: TASTAK BETRAYAL (Artem's Motel with interactive choice & Mantis escape!)
+    // =========================================================================
     if (act === 'TASTAK_BETRAYAL') {
       this.instances.setActiveInstance('NONE');
-      this.city.setStoryProps({ samirRooftop: false, samirJunkyard: false, artemCorpse: false, egorMarum: false });
-      this.engine.setAtmosphere(0x0a0714, 0x140a1d, 0.005);
+      this.city.setStoryProps({
+        samirRooftop: false,
+        samirJunkyard: false,
+        artemCorpse: false,
+        egorMarum: false,
+        motelArtem: true,
+        motelBodyguard: true,
+      });
+      this.engine.setAtmosphere(0x090612, 0x130a1d, 0.0048);
       this.chunks.forceRefresh(-165, -165, true, this.physics);
       this.player.teleport(-165, 0.25, -158, 0, 0);
       this.player.setMode('FREE');
       this.weapons.state.reset(['mantis_blades', 'alatau_pistol'], 'mantis_blades');
       this.weapons.setVisible(true);
       this.hud.setCrosshairVisible(true);
-      this.city.setInteractableEnabled('motel_sink', true);
+      this.city.setInteractableEnabled('motel_sink', false);
       this.hud.showActBanner('АКТ IV // МОТЕЛЬ НА КИБЕР-ТАСТАКЕ', 4.5);
-      this.hud.setObjective('ЗАЙДИТЕ В ВАННУЮ МОТЕЛЯ И УМОЙТЕСЬ [E]');
-      this.audio.setMusicIntensity('almaty_night');
-      this.say(
+      this.hud.setObjective('ПОГОВОРИТЕ С АРТЁМОМ В МОТЕЛЕ');
+      this.audio.setMusicIntensity('ambient');
+      this.queueLine(
         'artem',
-        'Аи... Вы с Санжаром облажались по полной. На нас повесили убийство Льва Маракулина! Иди умойся в ванной, с лица на тебе крови больше чем хрома.',
-        6.0,
+        'Аи... Вы с Санжаром облажались по полной. На весь город повесили убийство Льва Маракулина! Где биочип?',
+        5.0,
+        true,
       );
       this.setCheckpoint(act, -165, 0.25, -158, 0);
-      this.input.requestPointerLock();
       return;
     }
 
+    // =========================================================================
+    // ACT 5: JUNKYARD AWAKENING (Bolt-1-style eyelids, ECG, Trauma & Samir!)
+    // =========================================================================
     if (act === 'JUNKYARD_AWAKENING') {
       this.instances.setActiveInstance('NONE');
-      this.city.setStoryProps({ samirRooftop: false, samirJunkyard: true, artemCorpse: true, egorMarum: false });
-      this.engine.setAtmosphere(0x0c0b16, 0x161421, 0.0045);
+      this.city.setStoryProps({
+        samirRooftop: false,
+        samirJunkyard: true,
+        artemCorpse: true,
+        egorMarum: false,
+        motelArtem: false,
+        motelBodyguard: false,
+      });
+      this.engine.setAtmosphere(0x0b0a16, 0x151222, 0.0042);
       this.chunks.forceRefresh(-165, 165, true, this.physics);
       this.player.teleport(-165, 0, 165, 0, -0.1);
-      this.player.setMode('CINEMATIC');
+      this.player.setMode('FALLEN');
+      this.player.configureInteractiveCutscene(
+        { x: -165, y: 1.55, z: 165 },
+        { x: -163.8, y: 1.48, z: 161.4 },
+        66,
+      );
       this.weapons.setVisible(false);
       this.hud.setCrosshairVisible(false);
-      this.fx.eyelids = 0.95;
-      this.fx.relicGlitch = 0.65;
-      this.hud.setRelicWarning(true);
+      this.hud.setCombatHudVisible(false);
+      this.targetLetterbox = 0.72;
+      this.fx.eyelids = 0.96;
+      this.fx.relicGlitch = 0.8;
+      this.hud.setRelicWarning(true, 'БИОМОНИТОР // КРИТИЧЕСКИЙ СБОЙ — РЕАНИМАЦИЯ БИОЧИПОМ');
       this.hud.showActBanner('АКТ V // СВАЛКА — ПРОБУЖДЕНИЕ', 4.5);
-      this.hud.setObjective('ОЧНИТЕСЬ НА СВАЛКЕ');
       this.audio.playRelicGlitch();
-      this.audio.setMusicIntensity('almaty_night');
+      this.audio.playTinnitus(2.8);
+      this.audio.setMusicIntensity('operating');
+      this.ecgBeatTimer = 0.6;
       this.setCheckpoint(act, -165, 0, 165, 0);
       return;
     }
 
+    // =========================================================================
+    // ACT 6: OPEN WORLD CYBER-ALMATY (500x500m + Chunks + Rain + AVs + Taxi)
+    // =========================================================================
     if (act === 'OPEN_WORLD') {
       this.instances.setActiveInstance('NONE');
-      this.city.setStoryProps({ samirRooftop: true, samirJunkyard: false, artemCorpse: true, egorMarum: false });
-      this.engine.setAtmosphere(0x060a18, 0x090f24, 0.0036);
+      this.city.setStoryProps({
+        samirRooftop: true,
+        samirJunkyard: false,
+        artemCorpse: true,
+        egorMarum: false,
+        motelArtem: false,
+        motelBodyguard: false,
+      });
+      this.engine.setAtmosphere(0x060a18, 0x090f24, 0.0032);
       this.vehicle.setVisible(true);
       this.vehicle.state.setPose(-46, 0, -10, -Math.PI / 2);
       this.vehicle.syncMesh();
@@ -381,129 +564,239 @@ export class StoryDirector {
       this.audio.setMusicIntensity('almaty_night');
       this.spawnOpenWorldEncounters();
       this.updateOpenWorldObjective();
-      this.say(
+      this.queueLine(
         'samir',
-        'Весь Кибер-Алматы перед нами. Вызови Кибер-Ахмеда на [C], загляни в «Марум» к рипердоку, забери мой Malorian на Тастаке — и поднимись на смотровую крышу, когда будешь готов к штурму!',
-        7.0,
+        'Весь Кибер-Алматы перед нами. Вызови Кибер-Ахмеда [C], загляни в «Марум» к рипердоку, забери мой Malorian на Тастаке и взломай ретрансляторы — это даст козыри перед штурмом на смотровой крыше!',
+        7.5,
+        true,
       );
       this.setCheckpoint(act, -46, 0.25, -24, Math.PI);
       this.input.requestPointerLock();
       return;
     }
 
+    // =========================================================================
+    // ACT 7: TOWER ASSAULT (Bolt 1 Marakulin Tower Lighting + Nonlinear Approaches!)
+    // =========================================================================
     if (act === 'TOWER_ASSAULT') {
-      // Ensure Samir gives Malorian S-3516 for the assault & Smasher finisher!
+      const hadMalorian = this.weapons.state.unlocked.has('malorian');
       this.weapons.state.unlockWeapon('malorian', true);
       this.weapons.triggerSpin();
       this.instances.setActiveInstance('UNDERGROUND');
       this.instances.undergroundElevator.reset();
+      this.instances.setTowerSecurityHacked(false);
+      this.instances.setSupplyCrateUsed('tower_supply_lobby', false);
+      this.instances.setSupplyCrateUsed('tower_supply_arena', false);
       this.chunks.forceRefresh(0, 0, false, this.physics);
-      this.engine.setAtmosphere(0x0b0510, 0x160818, 0.01);
+      this.engine.setAtmosphere(0x090612, 0x110818, 0.0085);
+
       const yLobby = INSTANCE_Y.UNDERGROUND + 24;
       this.player.teleport(0, yLobby, 13, 0, 0);
       this.player.setMode('FREE');
       this.weapons.setVisible(true);
       this.hud.setCrosshairVisible(true);
-      this.hud.showActBanner('АКТ VII // ШТУРМ МАРАКУЛИН ТАУЭР', 5.0);
-      this.hud.setObjective('ЗАЧИСТИТЕ ГЛАВНЫЙ ХОЛЛ И СПУСТИТЕСЬ НА ЛИФТЕ К «ХУЕШИ»');
+
+      // Apply linear-nonlinear assault approach bonuses!
+      const bonuses = this.openWorld.getAssaultBonuses(this.player.state.streetCred);
+      const approach = this.stats.assaultApproach;
+      if (approach === 'eblanhana' || bonuses.hasEblanhanaSupport) {
+        this.player.state.armor = this.player.state.maxArmor;
+        this.player.state.maxDocCharges = Math.min(
+          this.player.state.maxMaxDoc,
+          this.player.state.maxDocCharges + 2,
+        );
+      }
+
+      const preHacked = approach === 'netrunner' && bonuses.hasNetrunnerIntel;
+      this.towerSecurityHacked = preHacked;
+      this.instances.setTowerSecurityHacked(preHacked);
+      this.instances.setInteractableEnabled('tower_hack_security', !preHacked);
+
+      this.hud.showActBanner(
+        approach === 'netrunner'
+          ? 'АКТ VII // ШТУРМ МАРАКУЛИН ТАУЭР (НЕТРАННЕР)'
+          : approach === 'eblanhana'
+            ? 'АКТ VII // ШТУРМ МАРАКУЛИН ТАУЭР (ЛЕГЕНДА ЕБЛАНХАНЫ)'
+            : 'АКТ VII // ШТУРМ МАРАКУЛИН ТАУЭР (КАК В 2026)',
+        5.0,
+      );
+      this.hud.setObjective(
+        preHacked
+          ? 'ТУРЕЛИ ОТКЛЮЧЕНЫ! ЗАЧИСТИТЕ АТРИУМ И СПУСТИТЕСЬ К «ХУЕШИ»'
+          : 'ЗАЧИСТИТЕ ГЛАВНЫЙ ХОЛЛ (ИЛИ ВЗЛОМАЙТЕ ТЕРМИНАЛ СПРАВА) И СПУСТИТЕСЬ К «ХУЕШИ»',
+      );
       this.audio.setMusicIntensity('combat');
-      this.say('samir', 'Пора развлечься как в 2026! Вали корпо-охрану и прорываемся вниз, к Хуеши!', 5.5);
-      this.enemies.spawnWave([
+
+      this.queueLine(
+        'samir',
+        hadMalorian
+          ? 'Мой Malorian в деле, как в старые добрые... Пора развлечься как в 2026!'
+          : 'Пора развлечься как в 2026! Забирай мой Malorian S-3516 — и разнесём Маракулин Тауэр до основания!',
+        5.5,
+        true,
+      );
+
+      const lobbyWave: Parameters<EnemyManager['spawnWave']>[0] = [
         { id: 'ta_1', archetype: 'guard', zoneId: 'tower_lobby', x: -7, y: yLobby, z: -2 },
         { id: 'ta_2', archetype: 'guard', zoneId: 'tower_lobby', x: 7, y: yLobby, z: -2 },
         { id: 'ta_3', archetype: 'netrunner', zoneId: 'tower_lobby', x: -5, y: yLobby, z: -15 },
         { id: 'ta_4', archetype: 'heavy', zoneId: 'tower_lobby', x: 4, y: yLobby, z: -16 },
-        { id: 'ta_5', archetype: 'drone', zoneId: 'tower_lobby', x: 0, y: yLobby, z: -10 },
-      ]);
+      ];
+      if (!preHacked) {
+        lobbyWave.push(
+          { id: 'ta_5', archetype: 'drone', zoneId: 'tower_lobby', x: 0, y: yLobby, z: -10 },
+          { id: 'ta_6', archetype: 'turret', zoneId: 'tower_lobby', x: -9, y: yLobby, z: -19 },
+        );
+      } else {
+        this.queueLine(
+          'system',
+          'НЕТРАННЕРСКИЙ ПРОТОКОЛ ТАСТАКА: Потолочные турели отключены, щит Рихарда Смэшера ослаблен на 20%!',
+          4.6,
+        );
+      }
+      this.enemies.spawnWave(lobbyWave);
       this.setCheckpoint(act, 0, yLobby, 13, 0);
       this.input.requestPointerLock();
       return;
     }
 
+    // =========================================================================
+    // ACT 8: SMASHER BOSS (3-Phase Detailed 3.1m Rikhard Smasher + Malorian Finisher!)
+    // =========================================================================
     if (act === 'SMASHER_BOSS') {
       this.weapons.state.unlockWeapon('malorian', false);
       this.instances.setActiveInstance('UNDERGROUND');
+      this.instances.setSupplyCrateUsed('tower_supply_arena', false);
       this.chunks.forceRefresh(0, 0, false, this.physics);
-      this.engine.setAtmosphere(0x0d040c, 0x1c0612, 0.0085);
+      this.engine.setAtmosphere(0x0b040c, 0x1a0612, 0.0072);
       const yCore = INSTANCE_Y.UNDERGROUND;
       this.player.teleport(0, yCore, -34, 0, 0);
       this.player.setMode('FREE');
       this.weapons.setVisible(true);
       this.hud.setCrosshairVisible(true);
+
       this.smasher.activateAt(0, yCore, -70);
+      if (this.towerSecurityHacked || this.stats.assaultApproach === 'netrunner') {
+        this.smasher.setArmorWeakened(20);
+      }
+
       this.audio.playSmasherRoar();
       this.audio.setMusicIntensity('boss');
+      this.player.addScreenShake(0.32);
+      this.fx.glitch = 0.7;
       this.hud.showActBanner('АКТ VIII // БОСС: РИХАРД СМЭШЕР', 5.0);
       this.hud.setObjective('ПОБЕДИТЕ РИХАРДА СМЭШЕРА И ДОБЕЙТЕ ЕГО ИЗ MALORIAN S-3516');
-      this.say(
+      this.queueLine(
         'smasher',
-        'Опять ты, кусок мяса?! Самир в твоей башке мне уже надоел — раздавлю вас обоих здесь, перед Хуеши!',
-        5.5,
+        'Опять ты, кусок мяса?! Самир в твоей башке мне надоел ещё в 2026 — раздавлю вас обоих перед Хуеши!',
+        5.2,
+        true,
       );
+      if (this.towerSecurityHacked) {
+        this.queueLine('samir', 'Отличный взлом, Аи — его энергощит искрит! Бей по голове и не стой на красных кругах!', 4.2);
+      }
       this.setCheckpoint(act, 0, yCore, -34, 0);
       this.input.requestPointerLock();
       return;
     }
 
+    // =========================================================================
+    // ACT 9: HUYESHI CHAIR EXTRACTION -> CYBERSPACE & TAISIYA!
+    // =========================================================================
     if (act === 'HUYESHI_CYBERSPACE') {
-      this.instances.setActiveInstance('CYBERSPACE');
+      // Phase 0: Seated in Bolt-1-style Huyeshi Chair under descending Neural Crown & lasers!
+      this.instances.setActiveInstance('UNDERGROUND');
+      this.instances.setHuyeshiExtraction(0);
       this.chunks.forceRefresh(0, 0, false, this.physics);
-      this.engine.setAtmosphere(0x030916, 0x06152c, 0.009);
-      this.player.teleport(0, INSTANCE_Y.CYBERSPACE, 4, 0, 0);
-      this.player.setMode('FREE');
+      this.engine.setAtmosphere(0x060918, 0x0b1228, 0.008);
+      const yCore = INSTANCE_Y.UNDERGROUND;
+      this.player.teleport(0, yCore, -90, 0, 0.45);
+      this.player.setMode('HUYESHI_CHAIR');
+      this.player.configureInteractiveCutscene(
+        { x: 0, y: yCore + 1.55, z: -89.4 },
+        { x: 0, y: yCore + 4.3, z: -90.2 },
+        68,
+      );
       this.weapons.setVisible(false);
       this.hud.setCrosshairVisible(false);
-      this.fx.cyberspace = 0.72;
-      this.hud.showActBanner('АКТ IX // ХУЕШИ — КИБЕРПРОСТРАНСТВО', 5.0);
-      this.hud.setObjective('ПОДОЙДИТЕ К ТАИСИИ ПО ЦИФРОВОМУ МОСТУ');
-      this.audio.setMusicIntensity('cyberspace');
-      this.say(
-        'taisiya',
-        'Добро пожаловать в Хуеши, Аи. Я разделила ваши сознания... Подойди ближе, нам нужно решить твою судьбу.',
-        6.0,
-      );
-      this.setCheckpoint(act, 0, INSTANCE_Y.CYBERSPACE, 4, 0);
-      this.input.requestPointerLock();
+      this.hud.setCombatHudVisible(false);
+      this.targetLetterbox = 0.65;
+      this.hud.setHuyeshiProgress(true, 0, 'ХУЕШИ // ПОДКЛЮЧЕНИЕ К ЧЁРНОМУ ЗАСЛОНУ');
+      this.hud.showActBanner('АКТ IX // ЗАПУСК «ХУЕШИ»', 4.5);
+      this.audio.setMusicIntensity('soulkiller');
+      this.audio.playSoulkillerSurge(4.6);
+      this.queueLine('system', 'ХУЕШИ АКТИВИРОВАН. ЗАПУСК ПРОТОКОЛА РАЗДЕЛЕНИЯ СОЗНАНИЯ...', 4.2, true);
+      this.setCheckpoint(act, 0, yCore, -90, 0);
       return;
     }
 
+    // =========================================================================
+    // ACT 10A: EPILOGUE MARUM (Legend of Eblanhana + Egor Eternal War contract)
+    // =========================================================================
     if (act === 'EPILOGUE_MARUM') {
       this.stats.endingId = 'marum';
       this.instances.setActiveInstance('NONE');
-      this.city.setStoryProps({ samirRooftop: false, samirJunkyard: false, artemCorpse: false, egorMarum: true });
-      this.engine.setAtmosphere(0x070c1a, 0x0b1428, 0.004);
+      this.city.setStoryProps({
+        samirRooftop: false,
+        samirJunkyard: false,
+        artemCorpse: false,
+        egorMarum: true,
+        motelArtem: false,
+        motelBodyguard: false,
+      });
+      this.engine.setAtmosphere(0x070c1a, 0x0b1428, 0.0038);
       this.chunks.forceRefresh(-46, -40, true, this.physics);
       this.player.teleport(-46, 0.25, -45, Math.PI, 0);
-      this.player.setMode('CINEMATIC');
+      this.player.setMode('ROOFTOP_SIT');
+      this.player.configureInteractiveCutscene(
+        { x: -46, y: 1.78, z: -44.2 },
+        { x: -46, y: 1.58, z: -38.5 },
+        60,
+      );
       this.weapons.setVisible(false);
       this.hud.setCrosshairVisible(false);
+      this.hud.setCombatHudVisible(false);
+      this.targetLetterbox = 0.68;
       this.hud.showActBanner('ЭПИЛОГ I // ЛЕГЕНДА ЕБЛАНХАНЫ — АНТИКАФЕ «МАРУМ»', 5.5);
-      this.hud.setObjective('ВЫСЛУШАЙТЕ ПРЕДЛОЖЕНИЕ ЕГОРА');
       this.audio.setMusicIntensity('marum_lounge');
-      this.say(
+      this.queueLine(
         'system',
         'Спустя 2 месяца. Аи вернулся в своё тело и стал живой легендой Ебланханы — владельцем антикафе «Марум».',
-        5.5,
+        5.2,
+        true,
       );
       return;
     }
 
+    // =========================================================================
+    // ACT 10B: EPILOGUE TALDYKORGAN (Samir in Ai's body leaving for Taldykorgan!)
+    // =========================================================================
     if (act === 'EPILOGUE_TALDYKORGAN') {
       this.stats.endingId = 'taldykorgan';
       this.instances.setActiveInstance('TALDYKORGAN');
       this.chunks.forceRefresh(0, 0, false, this.physics);
-      this.engine.setAtmosphere(0x2a100c, 0x3b1810, 0.0055);
+      this.engine.setAtmosphere(0x2a100c, 0x3b1810, 0.0048);
       this.player.teleport(0, INSTANCE_Y.TALDYKORGAN + 1.1, 8, 0, 0);
-      this.player.setMode('CINEMATIC');
+      this.player.setMode('ROOFTOP_SIT');
+      this.player.configureInteractiveCutscene(
+        { x: 0, y: INSTANCE_Y.TALDYKORGAN + 1.55, z: 8.2 },
+        { x: 0, y: INSTANCE_Y.TALDYKORGAN + 2.2, z: -45 },
+        70,
+      );
       this.weapons.setVisible(false);
       this.hud.setCrosshairVisible(false);
+      this.hud.setCombatHudVisible(false);
+      this.targetLetterbox = 0.72;
       this.hud.showActBanner('ЭПИЛОГ II // ДОРОГА В ГОРОД-АД ТАЛДЫКОРГАН', 5.5);
-      this.hud.setObjective('ПРОЩАНИЕ С КИБЕР-АЛМАТЫ');
       this.audio.setMusicIntensity('taldykorgan');
-      this.say(
+      const farewell = getCyberspaceFarewellLines('taldykorgan', this.stats.samirAffinity, this.censoredDialogue);
+      for (let i = 0; i < farewell.length; i++) {
+        this.queueLine(farewell[i].speaker, farewell[i].text, farewell[i].duration, i === 0);
+      }
+      this.queueLine(
         'samir',
-        'Спасибо за второй шанс, брат... Аи, я не забуду тебя. Кибер-Алматы остаётся позади. Впереди — город-ад Талдыкорган.',
-        7.5,
+        'Кибер-Алматы остаётся позади. Впереди — город-ад Талдыкорган. Прощай, Аи.',
+        5.2,
       );
     }
   }
@@ -532,7 +825,7 @@ export class StoryDirector {
       );
     } else {
       this.activeObjectivePos = { x: 148.5, y: 0, z: 157 };
-      this.hud.setObjective('ПОДНИМИТЕСЬ НА СМОТРОВУЮ КРЫШУ КОК-ТОБЕ (ЮВ) ДЛЯ ШТУРМА МАРАКУЛИН ТАУЭР');
+      this.hud.setObjective('ПОДНИМИТЕСЬ НА СМОТРОВУЮ КРЫШУ КОК-ТОБЕ (ЮВ) ДЛЯ ВЫБОРА ПЛАНА ШТУРМА');
     }
   }
 
@@ -548,15 +841,23 @@ export class StoryDirector {
   }
 
   private handlePointerLockChange(locked: boolean): void {
+    const isCinematicMode =
+      this.player.mode === 'CINEMATIC' ||
+      this.player.mode === 'ROOFTOP_SIT' ||
+      this.player.mode === 'FALLEN' ||
+      this.player.mode === 'EXECUTION' ||
+      this.player.mode === 'HUYESHI_CHAIR';
+
     if (
       !locked &&
       this.stateMachine.act !== 'TITLE' &&
       this.stateMachine.act !== 'CREDITS' &&
       this.modalOpen === 'NONE' &&
       !this.awaitingChoice &&
-      this.player.mode !== 'CINEMATIC'
+      !isCinematicMode
     ) {
       this.paused = true;
+      this.audio.setPaused(true);
       this.hud.showScreen('PAUSE');
     }
   }
@@ -571,6 +872,7 @@ export class StoryDirector {
       this.resumeGame();
     } else {
       this.paused = true;
+      this.audio.setPaused(true);
       this.input.exitPointerLock();
       this.hud.showScreen('PAUSE');
     }
@@ -579,8 +881,9 @@ export class StoryDirector {
   private resumeGame(): void {
     this.paused = false;
     this.modalOpen = 'NONE';
+    this.audio.setPaused(false);
     this.hud.showScreen('HUD');
-    if (this.player.mode !== 'CINEMATIC' && !this.awaitingChoice) {
+    if (this.player.mode === 'FREE' && !this.awaitingChoice) {
       this.input.requestPointerLock();
     }
   }
@@ -603,6 +906,7 @@ export class StoryDirector {
     }
     this.modalOpen = 'MAP';
     this.paused = true;
+    this.audio.setPaused(true);
     this.input.exitPointerLock();
     this.hud.renderFullMap(
       this.player.position,
@@ -617,6 +921,7 @@ export class StoryDirector {
   private openRipperdocModal(): void {
     this.modalOpen = 'RIPPERDOC';
     this.paused = true;
+    this.audio.setPaused(true);
     this.input.exitPointerLock();
     this.hud.renderRipperdoc(this.player.state, this.weapons.state.unlocked);
     this.hud.showScreen('RIPPERDOC');
@@ -625,6 +930,7 @@ export class StoryDirector {
   private closeModals(): void {
     this.modalOpen = 'NONE';
     this.paused = false;
+    this.audio.setPaused(false);
     this.hud.showScreen('HUD');
     this.input.requestPointerLock();
   }
@@ -640,7 +946,7 @@ export class StoryDirector {
     }
     this.audio.playPurchase();
     this.hud.renderRipperdoc(this.player.state, this.weapons.state.unlocked);
-    this.say('ripperdoc', `Отличный выбор, Аи! «${item.name}» откалиброван и готов к работе.`, 3.8);
+    this.queueLine('ripperdoc', `Отличный выбор, Аи! «${item.name}» откалиброван и готов к работе.`, 3.8, true);
   }
 
   private fastTravelToDistrict(districtId: DistrictId): void {
@@ -655,7 +961,7 @@ export class StoryDirector {
     this.chunks.forceRefresh(dist.fastTravelPos.x, dist.fastTravelPos.z, true, this.physics);
     this.audio.playCarHornOrSummon();
     this.closeModals();
-    this.say('akhmed', `Прибыли в район «${dist.name}», брат! Если понадоблюсь — зови на [C].`, 4.0);
+    this.queueLine('akhmed', `Прибыли в район «${dist.name}», брат! Если понадоблюсь — зови на [C].`, 4.0, true);
   }
 
   private trackGig(gigId: string): void {
@@ -672,17 +978,74 @@ export class StoryDirector {
 
   private handleChoiceSelection(choiceId: string): void {
     if (!this.awaitingChoice) return;
+    const ctx = this.activeChoiceContext;
     this.awaitingChoice = false;
+    this.activeChoiceContext = 'NONE';
+    this.activeChoices = [];
     this.hud.hideChoices();
 
-    if (choiceId === 'ending_marum') {
-      const next = this.stateMachine.selectFinaleEnding('marum');
+    // Apply affinity & queue branching response lines if defined
+    const branchResp = BRANCH_RESPONSES[choiceId];
+    if (branchResp) {
+      this.adjustSamirAffinity(branchResp.affinityDelta);
+      const lines = getBranchResponseLines(choiceId, this.censoredDialogue);
+      lines.forEach((l, idx) => this.queueLine(l.speaker, l.text, l.duration, idx === 0));
+    }
+
+    if (ctx === 'ROOFTOP_PROLOGUE') {
+      this.stateMachine.subStep = 2;
+      this.stateMachine.actTimer = 0;
+      return;
+    }
+
+    if (ctx === 'MOTEL_ARTEM') {
+      this.stateMachine.subStep = 1;
+      this.city.setInteractableEnabled('motel_sink', true);
+      this.hud.setObjective('ЗАЙДИТЕ В ВАННУЮ МОТЕЛЯ И УМОЙТЕСЬ [E]');
+      this.input.requestPointerLock();
+      return;
+    }
+
+    if (ctx === 'ASSAULT_PLAN') {
+      const approach: AssaultApproach =
+        choiceId === 'assault_netrunner'
+          ? 'netrunner'
+          : choiceId === 'assault_eblanhana'
+            ? 'eblanhana'
+            : 'frontal';
+      this.stats.assaultApproach = approach;
+      this.audio.playHoloChime();
+      this.enterAct('TOWER_ASSAULT');
+      return;
+    }
+
+    if (ctx === 'SMASHER_EXECUTION') {
+      // Dramatic 3-shot Malorian S-3516 execution burst right into Smasher's visor!
+      this.stateMachine.subStep = 2;
+      this.stateMachine.actTimer = 0;
+      this.weapons.state.unlockWeapon('malorian', true);
+      this.weapons.setVisible(true);
+      this.weapons.triggerShotVisual();
+      this.audio.playMalorianShot();
+      this.audio.playExplosion(true);
+      this.audio.playTinnitus(2.0);
+      this.player.addScreenShake(0.45);
+      this.fx.chromaticBoost = 0.85;
+      this.fx.glitch = 0.6;
+      this.smasher.finishExecutionAnimation();
+      this.hud.setBossBar(false);
+      return;
+    }
+
+    if (ctx === 'CYBERSPACE_ENDING') {
+      const choice: 'marum' | 'taldykorgan' = choiceId === 'ending_taldykorgan' ? 'taldykorgan' : 'marum';
+      const next = this.stateMachine.selectFinaleEnding(choice);
       this.enterAct(next);
-    } else if (choiceId === 'ending_taldykorgan') {
-      const next = this.stateMachine.selectFinaleEnding('taldykorgan');
-      this.enterAct(next);
-    } else if (choiceId === 'egor_accept') {
-      this.say('ai', 'Вечная война? Звучит достойно легенды Ебланханы. Я в деле, Егор.', 4.5);
+      return;
+    }
+
+    if (ctx === 'EGOR_CONTRACT') {
+      this.queueLine('ai', 'Вечная война? Звучит достойно легенды Ебланханы. Я в деле, Егор.', 4.6, true);
       this.stateMachine.subStep = 3;
       this.stateMachine.actTimer = 0;
     }
@@ -712,7 +1075,6 @@ export class StoryDirector {
   }
 
   private handleInteract(target: InteractablePoint | null): void {
-    // Check Cyber-Akhmed boarding/exiting first in Open World!
     if (this.stateMachine.act === 'OPEN_WORLD') {
       if (this.vehicle.state.occupied) {
         this.vehicle.state.occupied = false;
@@ -733,7 +1095,7 @@ export class StoryDirector {
         this.weapons.setVisible(false);
         this.hud.setCrosshairVisible(false);
         this.audio.playCarHornOrSummon();
-        this.say('akhmed', AKHMED_DRIVING_LINES[this.akhmedLineIdx++ % AKHMED_DRIVING_LINES.length], 4.2);
+        this.queueLine('akhmed', AKHMED_DRIVING_LINES[this.akhmedLineIdx++ % AKHMED_DRIVING_LINES.length], 4.2, true);
         return;
       }
     }
@@ -750,30 +1112,64 @@ export class StoryDirector {
       case 'rooftop_elevator_up':
         this.audio.playElevatorDing();
         this.player.teleport(162, 36, 160, Math.PI * 0.25, 0);
-        this.say('samir', 'Вот мы и на крыше. Готов устроить штурм Маракулин Тауэр? Подойди ко мне и нажми [E].', 5.5);
+        this.queueLine(
+          'samir',
+          'Вот мы и на крыше. Подойди ко мне [E] — выберем тактику штурма Маракулин Тауэр.',
+          5.0,
+          true,
+        );
         break;
       case 'rooftop_elevator_down':
         this.audio.playElevatorDing();
         this.player.teleport(148, 0.25, 152, Math.PI, 0);
         break;
-      case 'rooftop_start_assault':
-        this.audio.playHoloChime();
-        this.say('ai', 'Решено, Самир. Идём в Маракулин Тауэр через парадный вход.', 3.2);
-        this.enterAct('TOWER_ASSAULT');
+      case 'rooftop_start_assault': {
+        // Linear-Nonlinear 3-way Assault Plan choice right on the Rooftop (matching IMG-20261123-WA0011.jpg)!
+        const pose = this.city.getRooftopCameraPose();
+        this.player.setMode('ROOFTOP_SIT');
+        this.player.configureInteractiveCutscene(pose.position, pose.lookAt, pose.fov);
+        this.weapons.setVisible(false);
+        this.hud.setCombatHudVisible(false);
+        this.targetLetterbox = 0.55;
+        const planChoices = getAssaultPlanChoices({
+          hasNetrunnerIntel: this.openWorld.hasNetrunnerIntel(),
+          hasEblanhanaSupport: this.openWorld.hasEblanhanaSupport(this.player.state.streetCred),
+          censored: this.censoredDialogue,
+        });
+        this.queueLine(
+          'samir',
+          'Точка невозврата, Аи. Как берём Маракулин Тауэр? Всё, что ты сделал в Кибер-Алматы, сейчас сыграет свою роль.',
+          5.8,
+          true,
+        );
+        this.presentChoices('ASSAULT_PLAN', BRANCHING_CHOICES.tower_assault_plan.title, planChoices);
         break;
+      }
       case 'gig_malorian_stash': {
         this.city.setInteractableEnabled('gig_malorian_stash', false);
         this.weapons.state.unlockWeapon('malorian', true);
         this.weapons.triggerSpin();
         this.audio.playPurchase();
+        this.adjustSamirAffinity(15);
         this.completeGig('gig_malorian');
-        this.say('samir', 'Мой Malorian S-3516! Чёрт возьми, как же приятно снова видеть его в деле. Береги пушку, Аи.', 5.5);
+        this.queueLine(
+          'samir',
+          'Мой Malorian S-3516! Чёрт возьми, как же приятно снова видеть его в деле. Синхронизация растёт!',
+          5.5,
+          true,
+        );
         break;
       }
       case 'gig_tastak_terminal': {
         this.city.setInteractableEnabled('gig_tastak_terminal', false);
         this.audio.playTerminalHack();
         this.completeGig('gig_tastak_hack');
+        this.queueLine(
+          'samir',
+          'Отлично! Коды безопасности Маракулин Тауэр у нас — теперь на крыше откроется нетраннерский план штурма!',
+          5.2,
+          true,
+        );
         break;
       }
       case 'heist_steal_biochip': {
@@ -781,76 +1177,114 @@ export class StoryDirector {
         this.instances.biochipCase.visible = false;
         this.audio.playTerminalHack();
         this.instances.setInteractableEnabled('heist_hide_closet', true);
-        this.hud.setObjective('РОДИОН ЗАХОДИТ! СПРЯЧЬТЕСЬ В ШКАФ [E]');
-        this.say('sanzhar', 'Твою мать, Родион вернулся раньше! Быстро в шкаф слева, Аи!', 4.5);
+        this.hud.setObjective('РОДИОН ЗАХОДИТ! СПРЯЧЬТЕСЬ В ШКАФ СЛЕВА [E]');
+        this.queueLine('sanzhar', 'Твою мать, Родион вернулся раньше! Быстро в шкаф слева, Аи!', 4.5, true);
         this.stateMachine.subStep = 1;
         break;
       }
       case 'heist_hide_closet': {
         this.instances.setInteractableEnabled('heist_hide_closet', false);
-        this.player.teleport(-9.8, INSTANCE_Y.PENTHOUSE, 7, -Math.PI * 0.42, 0);
+        // Position directly inside the 3D slatted closet peering out through the wooden louver blinds!
+        this.player.teleport(-10.1, INSTANCE_Y.PENTHOUSE, 7, -Math.PI * 0.44, -0.02);
         this.player.setMode('CLOSET');
         this.weapons.setVisible(false);
+        this.hud.setCrosshairVisible(false);
+        this.hud.setCombatHudVisible(false);
+        this.targetLetterbox = 0.62;
         this.instances.penthouseRodion.group.visible = true;
         this.instances.penthouseLev.group.visible = true;
         this.instances.penthouseSmasherProp.visible = true;
+        this.instances.animatePenthouseMurder(0);
         this.stateMachine.subStep = 2;
         this.stateMachine.actTimer = 0;
-        this.hud.setObjective('НАБЛЮДАЙТЕ ИЗ ШКАФА');
-        this.say('lev', 'Родион, ты позоришь империю Маракулиных! Я отстраняю тебя от совета директоров!', 4.2);
+        this.queueLine('lev', 'Родион, ты позоришь империю Маракулиных! Я отстраняю тебя от совета директоров!', 3.6, true);
+        this.queueLine('rodion', 'Хватит, отец... Твоё время вышло. Вся мегакорпорация теперь принадлежит МНЕ!', 3.6);
         break;
       }
       case 'heist_elevator_btn': {
         this.instances.setInteractableEnabled('heist_elevator_btn', false);
         this.audio.playElevatorDing();
+        this.audio.playElevatorRide(3.4);
         this.instances.penthouseElevator.state.startRide();
         this.hud.setObjective('СПУСК В ГАРАЖ К ТАКСИ «КИБЕР-АХМЕД»');
         break;
       }
       case 'motel_sink': {
         this.city.setInteractableEnabled('motel_sink', false);
-        this.stateMachine.subStep = 1;
+        this.city.setStoryProps({ motelArtem: false, motelBodyguard: false });
+        // Bolt-1-style choke struggle cutscene until player pops Mantis Blades with LMB / F!
+        this.stateMachine.subStep = 2;
         this.stateMachine.actTimer = 0;
-        this.fx.damageVignette = 0.7;
-        this.player.addScreenShake(0.22);
-        this.weapons.state.equip('mantis_blades');
-        this.audio.playMantisSlash(true);
-        this.hud.setObjective('ТЕЛОХРАНИТЕЛЬ ДУШИТ ВАС! РАЗРУБИТЕ ЕГО И АРТЁМА КЛИНКАМИ БОГОМОЛА!');
-        this.say(
-          'system',
-          'Телохранитель Артёма схватил вас за горло! Выпустите Клинки Богомола (ЛКМ / ПКМ) и пробейтесь к Артёму!',
-          5.2,
+        this.chokeBeatTimer = 0.1;
+        this.fx.damageVignette = 0.85;
+        this.player.setMode('CHOKED');
+        this.player.configureInteractiveCutscene(
+          { x: -171.2, y: 1.72, z: -172.2 },
+          { x: -168.5, y: 1.88, z: -169.5 },
+          68,
         );
-        this.enemies.spawnWave([
-          { id: 'motel_bg', archetype: 'bodyguard', zoneId: 'motel', x: -167, y: 0.25, z: -168, hp: 110 },
-          { id: 'motel_artem', archetype: 'artem', zoneId: 'motel', x: -161, y: 0.25, z: -161, hp: 135 },
-        ]);
-        this.audio.setMusicIntensity('combat');
+        this.weapons.state.equip('mantis_blades');
+        this.weapons.setVisible(true);
+        this.audio.playChokeHeartbeat();
+        this.hud.setRelicWarning(true, 'ТЕЛОХРАНИТЕЛЬ ДУШИТ ВАС! НАЖМИТЕ [ЛКМ] ИЛИ [F] — КЛИНКИ БОГОМОЛА!');
+        this.hud.setObjective('НАЖМИТЕ [ЛКМ] ИЛИ [F], ЧТОБЫ ВЫРВАТЬСЯ КЛИНКАМИ БОГОМОЛА!');
+        this.queueLine('artem', 'Хватай его! Нам не нужны свидетели убийства Льва Маракулина!', 4.2, true);
+        break;
+      }
+      case 'tower_supply_lobby':
+      case 'tower_supply_arena': {
+        this.instances.setSupplyCrateUsed(target.id, true);
+        this.player.state.refillSupplies();
+        this.audio.playMaxDoc();
+        this.queueLine('system', 'ПОПОЛНЕНЫ ЗАРЯДЫ MAXDOC И ТАКТИЧЕСКАЯ БРОНЯ.', 2.8, true);
+        break;
+      }
+      case 'tower_hack_security': {
+        this.towerSecurityHacked = true;
+        this.instances.setTowerSecurityHacked(true);
+        this.audio.playTerminalHack();
+        this.enemies.clearZone('tower_lobby'); // Hack fries remaining lobby drones/turrets & clears hack path!
+        this.queueLine(
+          'system',
+          'УЗЕЛ БЕЗОПАСНОСТИ ВЗЛОМАН! Защита холла отключена, броня Рихарда Смэшера ослаблена на 20%!',
+          4.8,
+          true,
+        );
         break;
       }
       case 'tower_elevator_down': {
         this.instances.setInteractableEnabled('tower_elevator_down', false);
         this.audio.playElevatorDing();
+        this.audio.playElevatorRide(3.6);
         this.instances.undergroundElevator.state.startRide();
-        this.hud.setObjective('СПУСК К ЯДРУ «ХУЕШИ»...');
+        this.hud.setObjective('СПУСК В ПОДЗЕМНЫЙ КОМПЛЕКС «ХУЕШИ»...');
         break;
       }
       case 'smasher_execute': {
+        // Bolt-1-caliber interactive Malorian S-3516 execution cutscene!
         this.instances.setInteractableEnabled('smasher_execute', false);
+        this.stateMachine.subStep = 1;
+        this.stateMachine.actTimer = 0;
         this.weapons.state.unlockWeapon('malorian', true);
-        this.weapons.triggerShotVisual();
-        this.audio.playMalorianShot();
-        this.audio.playExplosion(true);
-        this.player.addScreenShake(0.32);
-        this.smasher.finishExecutionAnimation();
-        this.hud.setBossBar(false);
-        this.instances.setInteractableEnabled('huyeshi_jack_in', true);
-        this.hud.setObjective('ПОДКЛЮЧИТЕСЬ К АППАРАТУ «ХУЕШИ» [E]');
-        this.audio.setMusicIntensity('almaty_night');
-        this.say(
-          'samir',
-          'Это тебе за 2026 год, консервная банка! Рихард Смэшер мёртв. Пошли к Хуеши, Аи — время разделить наши мозги.',
-          6.0,
+        this.weapons.setVisible(true);
+        this.hud.setCrosshairVisible(false);
+        this.hud.setCombatHudVisible(false);
+        this.targetLetterbox = 0.65;
+
+        this.smasher.positionForExecution(this.player.position);
+        const headTarget = this.smasher.getHeadWorldPosition();
+        this.player.setMode('EXECUTION');
+        this.player.configureInteractiveCutscene(
+          { x: this.player.position.x, y: this.player.position.y + 1.52, z: this.player.position.z },
+          headTarget,
+          56,
+        );
+        this.audio.playSmasherRoar();
+        this.queueLine('smasher', 'Кхх... невозможно... жалкий кусок мяса... Самир... это ты?..', 4.2, true);
+        this.presentChoices(
+          'SMASHER_EXECUTION',
+          BRANCHING_CHOICES.smasher_execution.title,
+          getBranchChoices('smasher_execution', this.censoredDialogue),
         );
         break;
       }
@@ -876,9 +1310,35 @@ export class StoryDirector {
   }
 
   private handleCombatInput(input: InputSnapshot): void {
-    if (this.player.mode === 'CINEMATIC' || this.player.mode === 'CLOSET' || this.vehicle.state.occupied) {
+    // Allow breaking out of Motel Bodyguard Choke with LMB or F!
+    if (this.stateMachine.act === 'TASTAK_BETRAYAL' && this.stateMachine.subStep === 2) {
+      if (input.firePressed || input.meleePressed) {
+        this.stateMachine.subStep = 3;
+        this.hud.setRelicWarning(false);
+        this.player.setMode('FREE');
+        this.player.teleport(-171, 0.25, -171, -Math.PI * 0.75, 0);
+        this.weapons.state.equip('mantis_blades');
+        this.weapons.triggerMantisSlashVisual(2);
+        this.audio.playMantisSlash(true);
+        this.player.addScreenShake(0.28);
+        this.audio.setMusicIntensity('combat');
+        this.hud.setObjective('УБЕЙТЕ ТЕЛОХРАНИТЕЛЯ И АРТЁМА КЛИНКАМИ БОГОМОЛА!');
+        this.queueLine('ai', 'Отвали от меня! *ВЫДВИГАЕТ КЛИНКИ БОГОМОЛА*', 3.2, true);
+        this.enemies.spawnWave([
+          { id: 'motel_bg', archetype: 'bodyguard', zoneId: 'motel', x: -168, y: 0.25, z: -169, hp: 95 },
+          { id: 'motel_artem', archetype: 'artem', zoneId: 'motel', x: -161, y: 0.25, z: -161, hp: 130 },
+        ]);
+      }
       return;
     }
+
+    if (
+      this.player.mode !== 'FREE' &&
+      this.player.mode !== 'CHASE_PASSENGER'
+    ) {
+      return;
+    }
+    if (this.vehicle.state.occupied) return;
 
     if (input.weaponSlotKey !== null) {
       if (this.weapons.state.equipBySlot(input.weaponSlotKey)) {
@@ -926,7 +1386,6 @@ export class StoryDirector {
       }
     }
 
-    // Primary attack (LMB)
     const spec = this.weapons.state.getSpec();
     const wantsFire = spec.automatic ? input.fireHeld : input.firePressed;
     if (!wantsFire) return;
@@ -953,9 +1412,11 @@ export class StoryDirector {
       return;
     }
 
-    // Firearm shot(s)
     this.weapons.triggerShotVisual();
-    this.player.addRecoilKick(spec.recoilPitch * (1 - this.player.getAimBlend() * 0.45), (Math.random() - 0.5) * 0.01);
+    this.player.addRecoilKick(
+      spec.recoilPitch * (1 - this.player.getAimBlend() * 0.45),
+      (Math.random() - 0.5) * 0.01,
+    );
     if (spec.id === 'malorian') this.audio.playMalorianShot();
     else if (spec.id === 'steppe_smg') this.audio.playSmgShot();
     else if (spec.id === 'buran_shotgun') this.audio.playShotgunShot();
@@ -978,7 +1439,6 @@ export class StoryDirector {
       const maxDist = wallHit.hit ? wallHit.distance : spec.range;
       let endPoint = new THREE.Vector3(wallHit.point.x, wallHit.point.y, wallHit.point.z);
 
-      // Check Smasher boss first if active
       if (this.stateMachine.act === 'SMASHER_BOSS') {
         const bHit = this.smasher.checkBulletHit(eye, dir, maxDist, spec.damage, spec.headshotMult);
         if (bHit.hit) {
@@ -1036,11 +1496,11 @@ export class StoryDirector {
   private handleSmasherPhaseEvents(p2: boolean, p3: boolean, staggered: boolean): void {
     if (p2) {
       this.audio.playSmasherRoar();
-      this.say('smasher', 'САНДЕВИСТАН АКТИВИРОВАН! ПОПРОБУЙ ПОПАСТЬ, ЩЕНОК!', 4.5);
+      this.queueLine('smasher', 'САНДЕВИСТАН АКТИВИРОВАН! ПОПРОБУЙ ПОПАСТЬ, ЩЕНОК!', 4.2, true);
     }
     if (p3) {
       this.audio.playSmasherRoar();
-      this.say('samir', 'У него перегрев брони! Дожимай Смэшера, Аи!', 4.2);
+      this.queueLine('samir', 'У него перегрев брони! Дожимай Смэшера, Аи!', 4.0, true);
     }
     if (staggered) {
       this.audio.playExplosion(true);
@@ -1048,7 +1508,7 @@ export class StoryDirector {
       this.instances.updateInteractablePos('smasher_execute', pos.x, pos.y + 1.2, pos.z);
       this.instances.setInteractableEnabled('smasher_execute', true);
       this.hud.setObjective('ПОДОЙДИТЕ К СМЭШЕРУ И ДОБЕЙТЕ ЕГО ИЗ MALORIAN S-3516 [E]');
-      this.say('samir', 'ОН НА КОЛЕНЯХ! Доставай мой Malorian и покончи с Рихардом Смэшером [E]!', 6.0);
+      this.queueLine('samir', 'ОН НА КОЛЕНЯХ! Подойди с моим Malorian и покончи с Рихардом Смэшером [E]!', 6.0, true);
     }
   }
 
@@ -1060,14 +1520,12 @@ export class StoryDirector {
       this.stats.tengeEarned += rewardTenge;
     }
 
-    // Check Open World combat gigs
     if (zoneId && (zoneId === 'gig_junkyard' || zoneId === 'gig_convoy' || zoneId === 'gig_cyberpsycho')) {
       if (this.enemies.getAliveCount(zoneId) === 0) {
         this.completeGig(zoneId);
       }
     }
 
-    // Check Act 3 Chase drones
     if (this.stateMachine.act === 'FLASHBACK_CHASE' && zoneId === 'chase') {
       this.chaseDronesRemaining = this.enemies.getAliveCount('chase');
       if (this.chaseDronesRemaining > 0) {
@@ -1095,46 +1553,53 @@ export class StoryDirector {
     const act = this.stateMachine.act;
     this.stateMachine.actTimer += dt;
 
-    // 1. PROLOGUE ROOFTOP
+    // 1. PROLOGUE ROOFTOP (Exact photo framing + interactive Cyberpunk 2077 choice!)
     if (act === 'PROLOGUE_ROOFTOP') {
-      this.player.setExternalCamera(
-        { x: 168.5, y: 37.8, z: 168.5 },
-        { x: 163.0, y: 37.3, z: 163.0 },
-        70,
-      );
-      if (this.stateMachine.actTimer > 7.8) {
-        this.fx.blackout = Math.min(1, (this.stateMachine.actTimer - 7.8) / 1.4);
-      }
-      if (this.stateMachine.actTimer > 9.3) {
-        this.enterAct('FLASHBACK_HEIST');
+      if (this.stateMachine.subStep === 0 && this.stateMachine.actTimer > 3.6) {
+        this.stateMachine.subStep = 1;
+        this.presentChoices(
+          'ROOFTOP_PROLOGUE',
+          BRANCHING_CHOICES.rooftop_prologue.title,
+          getBranchChoices('rooftop_prologue', this.censoredDialogue),
+        );
+      } else if (this.stateMachine.subStep === 2) {
+        if (this.stateMachine.actTimer > 6.4) {
+          this.fx.glitch = Math.min(0.7, (this.stateMachine.actTimer - 6.4) * 0.7);
+          this.fx.blackout = Math.min(1, (this.stateMachine.actTimer - 6.4) / 1.4);
+        }
+        if (this.stateMachine.actTimer > 7.9) {
+          this.enterAct('FLASHBACK_HEIST');
+        }
       }
       return;
     }
 
-    // 2. FLASHBACK HEIST (PENTHOUSE)
+    // 2. FLASHBACK HEIST (3D Slatted Closet + Choreographed Rodion/Lev murder + Bolt 1 Elevator!)
     if (act === 'FLASHBACK_HEIST') {
       if (this.stateMachine.subStep === 2) {
-        // Watching Rodion strangle Lev Marakulin from inside the closet
-        if (this.stateMachine.actTimer > 2.2 && this.stateMachine.actTimer < 6.0) {
-          this.instances.penthouseRodion.group.position.x = THREE.MathUtils.lerp(0.8, -0.1, Math.min(1, (this.stateMachine.actTimer - 2.2) / 1.4));
-          this.instances.penthouseRodion.rightArm.rotation.x = -1.4;
-          this.instances.penthouseRodion.leftArm.rotation.x = -1.4;
+        this.instances.animatePenthouseMurder(this.stateMachine.actTimer);
+        if (this.stateMachine.actTimer > 4.2 && this.stateMachine.actTimer < 4.4) {
+          this.player.addScreenShake(0.14);
+          this.audio.playPlayerHurt(true);
         }
-        if (this.stateMachine.actTimer > 4.2 && this.stateMachine.actTimer < 4.35) {
-          this.say('rodion', 'Теперь вся мегакорпорация Маракулин принадлежит мне, отец. Рихард, перекрой башню!', 4.2);
-          this.instances.penthouseLev.group.rotation.x = -Math.PI / 2;
-          this.instances.penthouseLev.group.position.y = INSTANCE_Y.PENTHOUSE + 0.25;
-        }
-        if (this.stateMachine.actTimer > 8.2) {
+        if (this.stateMachine.actTimer > 8.6) {
           this.instances.penthouseRodion.group.visible = false;
           this.instances.penthouseSmasherProp.visible = false;
+          this.targetLetterbox = 0;
+          this.hud.setCombatHudVisible(true);
+          this.hud.setCrosshairVisible(true);
           this.player.teleport(-7.5, INSTANCE_Y.PENTHOUSE, 7, 0, 0);
           this.player.setMode('FREE');
           this.weapons.setVisible(true);
           this.stateMachine.subStep = 3;
           this.audio.setMusicIntensity('combat');
           this.hud.setObjective('ПРОРВИТЕСЬ С БОЕМ К ЛИФТУ В ГАРАЖ КИБЕР-АХМЕДА');
-          this.say('sanzhar', 'Он реально задушил собственного отца! Охуев от этого дерьма, валим к лифту!', 5.0);
+          this.queueLine(
+            'sanzhar',
+            'Он реально задушил собственного отца! Охуев от этого дерьма, прорываемся к лифту!',
+            5.0,
+            true,
+          );
           this.enemies.spawnWave([
             { id: 'ph_g1', archetype: 'guard', zoneId: 'penthouse', x: -5, y: INSTANCE_Y.PENTHOUSE, z: -12 },
             { id: 'ph_g2', archetype: 'guard', zoneId: 'penthouse', x: 5, y: INSTANCE_Y.PENTHOUSE, z: -18 },
@@ -1145,10 +1610,11 @@ export class StoryDirector {
         this.stateMachine.subStep = 4;
         this.instances.setInteractableEnabled('heist_elevator_btn', true);
         this.hud.setObjective('ЗАЙДИТЕ В ЛИФТ И НАЖМИТЕ [E], ЧТОБЫ СПУСТИТЬСЯ К КИБЕР-АХМЕДУ');
-        this.say('sanzhar', 'Путь к лифту чист! Жми кнопку [E] — Кибер-Ахмед уже ждёт внизу!', 4.5);
+        this.queueLine('sanzhar', 'Путь к лифту чист! Жми кнопку [E] — Кибер-Ахмед ждёт внизу!', 4.5, true);
       }
 
       const elevRes = this.instances.penthouseElevator.update(worldDt);
+      if (elevRes.floorChanged) this.audio.playElevatorFloorTick();
       if (this.instances.penthouseElevator.state.isRideActive()) {
         this.player.syncElevatorY(this.instances.penthouseElevator.state.currentY);
       }
@@ -1158,90 +1624,135 @@ export class StoryDirector {
       return;
     }
 
-    // 3. FLASHBACK CHASE (CYBER-AKHMED TAXI)
+    // 3. FLASHBACK CHASE (Inside Cyber-Akhmed Cabin + Dying Sanzhar Biochip Insertion!)
     if (act === 'FLASHBACK_CHASE') {
-      this.fx.speedLines = 0.55;
+      this.fx.speedLines = 0.52;
       if (this.chaseWaveSpawned && this.enemies.getAliveCount('chase') === 0 && this.stateMachine.subStep === 0) {
         this.stateMachine.subStep = 1;
         this.stateMachine.actTimer = 0;
-        this.audio.setMusicIntensity('almaty_night');
-        this.hud.setObjective('ВЫ ОТОРВАЛИСЬ ОТ ПОГОНИ...');
-        this.say('ai', 'ДААА! Мы сделали это, Санжар! Оторвались от корпов! Санжар?.. Эй, ты чего молчишь?!', 4.6);
-      } else if (this.stateMachine.subStep === 1 && this.stateMachine.actTimer > 4.8) {
+        this.instances.setChaseSanzharWounded(true);
+        this.weapons.setVisible(false);
+        this.hud.setCrosshairVisible(false);
+        this.hud.setCombatHudVisible(false);
+        this.targetLetterbox = 0.6;
+        this.audio.setMusicIntensity('ambient');
+        this.queueLine(
+          'ai',
+          'ДААА! Мы сделали это, Санжар! Оторвались от корпов! Санжар?.. Эй, ты чего молчишь?!',
+          4.5,
+          true,
+        );
+      } else if (this.stateMachine.subStep === 1 && this.stateMachine.actTimer > 4.6) {
         this.stateMachine.subStep = 2;
         this.stateMachine.actTimer = 0;
-        this.say(
+        this.instances.setChaseBiochipVisible(true);
+        this.queueLine(
           'sanzhar',
-          'Меня... зацепило в лифте, брат. Держи биочип... не отдавай его Артёму, забери и продай... Я вставлю его тебе в слот...',
-          6.2,
+          'Меня... зацепило в лифте, брат. Держи биочип... не отдавай его Артёму, забери и продай... Я вставляю его тебе в слот...',
+          6.0,
+          true,
         );
-        this.fx.relicGlitch = 0.6;
+        this.fx.relicGlitch = 0.78;
         this.audio.playRelicGlitch();
-      } else if (this.stateMachine.subStep === 2 && this.stateMachine.actTimer > 6.5) {
-        this.fx.blackout = Math.min(1, (this.stateMachine.actTimer - 6.5) / 1.5);
-        if (this.stateMachine.actTimer > 8.1) {
+        this.audio.playTinnitus(2.2);
+      } else if (this.stateMachine.subStep === 2 && this.stateMachine.actTimer > 6.2) {
+        this.fx.blackout = Math.min(1, (this.stateMachine.actTimer - 6.2) / 1.5);
+        if (this.stateMachine.actTimer > 7.8) {
           this.enterAct('TASTAK_BETRAYAL');
         }
       }
       return;
     }
 
-    // 4. TASTAK BETRAYAL (ARTEM'S MOTEL)
+    // 4. TASTAK BETRAYAL (Motel dialogue choice -> Sink -> Choke Struggle -> Point-blank shot!)
     if (act === 'TASTAK_BETRAYAL') {
-      if (this.stateMachine.subStep === 1 && this.enemies.getAliveCount('motel') === 0) {
-        this.stateMachine.subStep = 2;
+      if (this.stateMachine.subStep === 0 && this.stateMachine.actTimer > 3.2 && !this.awaitingChoice) {
+        this.presentChoices(
+          'MOTEL_ARTEM',
+          BRANCHING_CHOICES.motel_artem.title,
+          getBranchChoices('motel_artem', this.censoredDialogue),
+        );
+      } else if (this.stateMachine.subStep === 2) {
+        // Choke heartbeat pulse until player breaks free with Mantis Blades!
+        this.chokeBeatTimer -= dt;
+        this.fx.damageVignette = 0.72 + Math.sin(this.elapsedTotal * 7) * 0.16;
+        if (this.chokeBeatTimer <= 0) {
+          this.chokeBeatTimer = 0.85;
+          this.audio.playChokeHeartbeat();
+        }
+      } else if (this.stateMachine.subStep === 3 && this.enemies.getAliveCount('motel') === 0) {
+        this.stateMachine.subStep = 4;
         this.stateMachine.actTimer = 0;
         this.audio.playMalorianShot();
         this.audio.playPlayerHurt(true);
-        this.player.addScreenShake(0.45);
+        this.audio.playTinnitus(3.2);
+        this.player.addScreenShake(0.5);
         this.fx.damageVignette = 1.0;
-        this.player.setMode('CINEMATIC');
-        this.say('artem', 'Ты думал, выйдешь отсюда живым?! Перед смертью я заберу тебя с собой, Аи! *ВЫСТРЕЛ В ГОЛОВУ*', 4.5);
-      } else if (this.stateMachine.subStep === 2) {
-        this.fx.blackout = Math.min(1, this.stateMachine.actTimer / 2.2);
-        if (this.stateMachine.actTimer > 3.6) {
+        this.fx.glitch = 1.0;
+        this.weapons.setVisible(false);
+        this.hud.setCombatHudVisible(false);
+        this.targetLetterbox = 0.75;
+        this.player.setMode('FALLEN');
+        this.player.configureInteractiveCutscene(
+          { x: this.player.position.x, y: this.player.position.y + 1.5, z: this.player.position.z },
+          { x: -161, y: 1.5, z: -161 },
+          72,
+        );
+        this.queueLine(
+          'artem',
+          'Думал уйдёшь живым?! Перед смертью я заберу тебя с собой, Аи! *ВЫСТРЕЛ В ГОЛОВУ*',
+          4.2,
+          true,
+        );
+      } else if (this.stateMachine.subStep === 4) {
+        this.fx.blackout = Math.min(1, this.stateMachine.actTimer / 2.4);
+        if (this.stateMachine.actTimer > 3.8) {
           this.enterAct('JUNKYARD_AWAKENING');
         }
       }
       return;
     }
 
-    // 5. JUNKYARD AWAKENING & SAMIR'S ICONIC LINE
+    // 5. JUNKYARD AWAKENING (Bolt 1 Operating Table eyelids blink + ECG + Samir!)
     if (act === 'JUNKYARD_AWAKENING') {
-      this.fx.eyelids = Math.max(0, 0.95 - this.stateMachine.actTimer * 0.25);
-      this.fx.relicGlitch = Math.max(0.12, 0.7 - this.stateMachine.actTimer * 0.1);
-      this.player.setExternalCamera(
-        { x: -165, y: 1.2 + Math.min(0.5, this.stateMachine.actTimer * 0.15), z: 165 },
-        { x: -163.8, y: 1.45, z: 161.4 },
-        72,
-      );
-      if (this.stateMachine.subStep === 0 && this.stateMachine.actTimer > 2.2) {
+      const t = this.stateMachine.actTimer;
+      // Double realistic blink just like Bolt 1 Operating Table!
+      const blink = t < 1.6 ? 0.96 - t * 0.45 : t < 2.2 ? 0.25 + (t - 1.6) * 0.85 : Math.max(0, 0.76 - (t - 2.2) * 0.45);
+      this.fx.eyelids = Math.max(0, Math.min(1, blink));
+      this.fx.relicGlitch = Math.max(0.1, 0.85 - t * 0.11);
+
+      this.ecgBeatTimer -= dt;
+      if (this.ecgBeatTimer <= 0 && t < 5.0) {
+        this.ecgBeatTimer = 0.95;
+        this.audio.playEcgBeep(860, 0.12, false);
+      }
+
+      if (this.stateMachine.subStep === 0 && t > 2.6) {
         this.stateMachine.subStep = 1;
         this.audio.playRelicGlitch();
-        this.say('samir', 'Вставай ебанат блять, у нас Кибер-Алматы на сожжение.', 5.8);
+        this.hud.setRelicWarning(true, 'БИОЧИП АКТИВЕН // КОНСТРУКТ: САМИР');
+        this.queueLine('samir', 'Вставай ебанат блять, у нас Кибер-Алматы на сожжение.', 5.6, true);
       }
-      if (this.stateMachine.actTimer > 8.4) {
+      if (t > 8.6) {
         this.enterAct('OPEN_WORLD');
       }
       return;
     }
 
-    // 6. OPEN WORLD CYBER-ALMATY (500x500m + CHUNKS + CYBER-AKHMED)
+    // 6. OPEN WORLD CYBER-ALMATY (500x500m + Chunks + Cyber-Akhmed)
     if (act === 'OPEN_WORLD') {
-      // Summon Cyber-Akhmed with [C]
       if (input.summonCarPressed && !this.vehicle.state.occupied && this.player.position.y < 5) {
         this.vehicle.summonNear(this.player.position.x, this.player.position.z, this.player.yaw);
         this.audio.playCarHornOrSummon();
-        this.say('akhmed', 'Кибер-Ахмед подан прямо к бордюру! Садись на [E].', 3.4);
+        this.queueLine('akhmed', 'Кибер-Ахмед подан прямо к бордюру! Садись на [E].', 3.4, true);
       }
 
-      // Autopilot toggle [G] while driving
       if (input.autopilotPressed && this.vehicle.state.occupied && this.activeObjectivePos) {
         if (this.vehicle.state.autopilotActive) {
           this.vehicle.state.stopAutopilot();
         } else {
           this.vehicle.state.startAutopilot(this.activeObjectivePos);
-          this.say('akhmed', 'Автопилот включён! Едем к активной цели, можешь отдохнуть.', 3.6);
+          this.queueLine('akhmed', 'Автопилот включён! Едем к активной цели, можешь отдохнуть.', 3.6, true);
         }
       }
 
@@ -1253,7 +1764,7 @@ export class StoryDirector {
         }
         if (vRes.arrivedAutopilot) {
           this.audio.playCarHornOrSummon();
-          this.say('akhmed', 'Мы на месте, брат! Выходи на [E].', 3.4);
+          this.queueLine('akhmed', 'Мы на месте, брат! Выходи на [E].', 3.4, true);
         }
         this.player.position.set(this.vehicle.state.x, this.vehicle.state.y, this.vehicle.state.z);
         this.player.yaw = this.vehicle.state.yaw;
@@ -1261,16 +1772,14 @@ export class StoryDirector {
         this.player.setExternalCamera(rig.pos, rig.lookAt, rig.fov);
       }
 
-      // District discovery & Samir commentary
       const district = getDistrictAt(this.player.position.x, this.player.position.z);
       if (district.id !== this.lastDistrictId) {
         this.lastDistrictId = district.id;
         this.hud.setDistrict(district.name, district.subtitle);
         if (this.openWorld.markDistrictVisited(district.id)) {
           const lines = DISTRICT_SAMIR_BANTER[district.id];
-          this.say('samir', lines[0], 5.0);
+          this.queueLine('samir', lines[0], 5.0);
         }
-        // Subtle music shift inside Marum Anti-cafe
         const nearMarum = Math.hypot(this.player.position.x - -46, this.player.position.z - -40) < 16;
         this.audio.setMusicIntensity(nearMarum ? 'marum_lounge' : 'almaty_night');
       }
@@ -1283,9 +1792,10 @@ export class StoryDirector {
         this.stateMachine.subStep = 1;
         this.instances.setInteractableEnabled('tower_elevator_down', true);
         this.hud.setObjective('ЗАЙДИТЕ В ЛИФТ И СПУСТИТЕСЬ К «ХУЕШИ» [E]');
-        this.say('samir', 'Холл чист! Жми кнопку лифта [E] — Хуеши и последняя преграда ждут внизу.', 4.8);
+        this.queueLine('samir', 'Холл чист! Жми кнопку лифта [E] — Хуеши и последняя преграда ждут внизу.', 4.8, true);
       }
       const elevRes = this.instances.undergroundElevator.update(worldDt);
+      if (elevRes.floorChanged) this.audio.playElevatorFloorTick();
       if (this.instances.undergroundElevator.state.isRideActive()) {
         this.player.syncElevatorY(this.instances.undergroundElevator.state.currentY);
       }
@@ -1295,79 +1805,129 @@ export class StoryDirector {
       return;
     }
 
-    // 8. SMASHER BOSS
+    // 8. SMASHER BOSS + INTERACTIVE EXECUTION CUTSCENE
     if (act === 'SMASHER_BOSS') {
-      this.smasher.update(worldDt, this.player.position, this.player.getEyePosition(), this.physics, {
-        onAutocannonShot: () => this.audio.playEnemyShot(true),
-        onMissileExplode: () => this.audio.playExplosion(true),
-        onRoar: () => this.audio.playSmasherRoar(),
-        onPlayerDamaged: (dmg, shake) => this.handlePlayerDamaged(dmg, shake),
-      });
+      if (this.stateMachine.subStep === 2) {
+        // Post-execution cinematic beat before returning control to jack into Huyeshi
+        if (this.stateMachine.actTimer > 0.38 && this.stateMachine.actTimer < 0.45) {
+          this.weapons.triggerShotVisual();
+          this.audio.playMalorianShot();
+          this.player.addScreenShake(0.28);
+        }
+        if (this.stateMachine.actTimer > 2.4) {
+          this.stateMachine.subStep = 3;
+          this.targetLetterbox = 0;
+          this.hud.setCombatHudVisible(true);
+          this.hud.setCrosshairVisible(true);
+          this.player.setMode('FREE');
+          this.instances.setInteractableEnabled('huyeshi_jack_in', true);
+          this.hud.setObjective('ПОДКЛЮЧИТЕСЬ К АППАРАТУ «ХУЕШИ» [E]');
+          this.audio.setMusicIntensity('ambient');
+          this.queueLine('samir', 'Рихард Смэшер мёртв! Подходим к креслу Хуеши [E] — пора разделить наши сознания.', 5.5, true);
+          this.input.requestPointerLock();
+        }
+        return;
+      }
 
-      const phaseLabel =
-        this.smasher.state.phase === 'STAGGERED'
-          ? 'ОГЛУШЁН — ДОБИТЬ [E]'
-          : this.smasher.state.phase === 'PHASE_3'
-            ? 'ФАЗА III // БЕРСЕРК'
-            : this.smasher.state.phase === 'PHASE_2'
-              ? 'ФАЗА II // САНДЕВИСТАН'
-              : 'ФАЗА I';
+      if (this.stateMachine.subStep === 0) {
+        this.smasher.update(worldDt, this.player.position, this.player.getEyePosition(), this.physics, {
+          onAutocannonShot: () => this.audio.playEnemyShot(true),
+          onMissileExplode: () => this.audio.playExplosion(true),
+          onRoar: () => this.audio.playSmasherRoar(),
+          onPlayerDamaged: (dmg, shake) => this.handlePlayerDamaged(dmg, shake),
+        });
 
-      this.hud.setBossBar(
-        this.smasher.state.phase !== 'EXECUTED' && this.smasher.state.phase !== 'DORMANT',
-        'РИХАРД СМЭШЕР // ОМЕГА-КИБОРГ',
-        phaseLabel,
-        this.smasher.state.getHpRatio(),
-      );
+        const phaseLabel =
+          this.smasher.state.phase === 'STAGGERED'
+            ? 'ОГЛУШЁН — ДОБИТЬ [E]'
+            : this.smasher.state.phase === 'PHASE_3'
+              ? 'ФАЗА III // БЕРСЕРК'
+              : this.smasher.state.phase === 'PHASE_2'
+                ? 'ФАЗА II // САНДЕВИСТАН'
+                : 'ФАЗА I';
+
+        this.hud.setBossBar(
+          this.smasher.state.phase !== 'EXECUTED' && this.smasher.state.phase !== 'DORMANT',
+          'РИХАРД СМЭШЕР // ОМЕГА-КИБОРГ',
+          phaseLabel,
+          this.smasher.state.getHpRatio(),
+        );
+      }
       return;
     }
 
-    // 9. HUYESHI CYBERSPACE & TAISIYA CHOICE
+    // 9. HUYESHI EXTRACTION (Bolt 1 Soulkiller sequence!) -> CYBERSPACE & TAISIYA!
     if (act === 'HUYESHI_CYBERSPACE') {
+      if (this.stateMachine.subStep === 0) {
+        const progress = Math.min(1, this.stateMachine.actTimer / 4.8);
+        this.instances.setHuyeshiExtraction(progress);
+        this.hud.setHuyeshiProgress(true, progress, 'ХУЕШИ // РАЗДЕЛЕНИЕ СОЗНАНИЯ');
+        this.fx.soulkiller = progress;
+        this.fx.glitch = progress * 0.45;
+        if (progress >= 1) {
+          // Dissolve into Cyberspace bridge before Taisiya!
+          this.stateMachine.subStep = 1;
+          this.stateMachine.actTimer = 0;
+          this.fx.soulkiller = 0;
+          this.fx.cyberspace = 0.72;
+          this.targetLetterbox = 0;
+          this.hud.setHuyeshiProgress(false);
+          this.hud.setCombatHudVisible(true);
+          this.instances.setActiveInstance('CYBERSPACE');
+          this.engine.setAtmosphere(0x030916, 0x06152c, 0.0085);
+          this.player.teleport(0, INSTANCE_Y.CYBERSPACE, 4, 0, 0);
+          this.player.setMode('FREE');
+          this.audio.setMusicIntensity('cyberspace');
+          this.hud.setObjective('ПОДОЙДИТЕ К ТАИСИИ ПО ЦИФРОВОМУ МОСТУ');
+          this.queueLine(
+            'taisiya',
+            'Добро пожаловать за Чёрный Заслон, Аи. Подойди ближе — я уже разделила вас с Самиром.',
+            5.5,
+            true,
+          );
+          this.input.requestPointerLock();
+        }
+        return;
+      }
+
       this.fx.cyberspace = 0.72;
-      if (this.stateMachine.subStep === 0 && this.player.position.z < -18) {
-        this.stateMachine.subStep = 1;
-        this.awaitingChoice = true;
-        this.input.exitPointerLock();
-        this.say(
+      if (this.stateMachine.subStep === 1 && this.player.position.z < -17) {
+        this.stateMachine.subStep = 2;
+        this.hud.setCombatHudVisible(false);
+        this.targetLetterbox = 0.58;
+        this.queueLine(
           'taisiya',
-          'Я разделила ваши сознания, Аи. Но твоё тело повреждено биочипом — если вернёшься сам, проживёшь лишь полгода. Если отдашь тело Самиру, он проживёт полноценную жизнь. Решай.',
+          'Твоё тело повреждено биочипом: если вернёшься сам — проживёшь лишь полгода. Если отдашь тело Самиру — он проживёт полноценную жизнь. Решай.',
           9.0,
+          true,
         );
-        this.hud.showChoices('ВЫБОР В ХУЕШИ — РЕШЕНИЕ ТАИСИИ', [
-          {
-            id: 'ending_marum',
-            key: '1',
-            text: 'Вернуться в своё тело (прожить полгода легендой Ебланханы)',
-            subtext: 'Аи становится владельцем антикафе «Марум» и встречает Егора.',
-          },
-          {
-            id: 'ending_taldykorgan',
-            key: '2',
-            text: 'Отдать тело Самиру (дать ему полноценную жизнь)',
-            subtext: 'Самир в теле Аи прощается с Кибер-Алматы и уезжает в Талдыкорган.',
-          },
-        ]);
+        this.presentChoices(
+          'CYBERSPACE_ENDING',
+          BRANCHING_CHOICES.cyberspace_ending.title,
+          getBranchChoices('cyberspace_ending', this.censoredDialogue),
+        );
       }
       return;
     }
 
     // 10A. EPILOGUE MARUM + EGOR
     if (act === 'EPILOGUE_MARUM') {
-      this.player.setExternalCamera({ x: -46, y: 1.8, z: -44.5 }, { x: -46, y: 1.5, z: -38.5 }, 68);
-      if (this.stateMachine.subStep === 0 && this.stateMachine.actTimer > 5.6) {
+      if (this.stateMachine.subStep === 0 && this.stateMachine.actTimer > 5.4) {
         this.stateMachine.subStep = 1;
         this.stateMachine.actTimer = 0;
-        this.say(
+        const syncNote =
+          this.stats.samirAffinity >= 70
+            ? ' Самир ушёл за Чёрный Заслон как твой настоящий брат.'
+            : '';
+        this.queueLine(
           'egor',
-          'Поздравляю с новым «Марумом», легенда Ебланханы. Меня зовут Егор. У меня есть для тебя последний, самый громкий контракт — на Вечную войну. Согласен?',
-          6.5,
+          `Поздравляю с новым «Марумом», легенда Ебланханы.${syncNote} Меня зовут Егор. У меня есть для тебя контракт на Вечную войну. Согласен?`,
+          6.8,
+          true,
         );
-      } else if (this.stateMachine.subStep === 1 && this.stateMachine.actTimer > 6.2) {
+      } else if (this.stateMachine.subStep === 1 && this.stateMachine.actTimer > 6.4) {
         this.stateMachine.subStep = 2;
-        this.awaitingChoice = true;
-        this.input.exitPointerLock();
-        this.hud.showChoices('КОНТРАКТ ЕГОРА', [
+        this.presentChoices('EGOR_CONTRACT', 'КОНТРАКТ ЕГОРА', [
           {
             id: 'egor_accept',
             key: '1',
@@ -1375,8 +1935,9 @@ export class StoryDirector {
             subtext: 'Завершить историю Аи как легенды Ебланханы.',
           },
         ]);
-      } else if (this.stateMachine.subStep === 3 && this.stateMachine.actTimer > 4.6) {
+      } else if (this.stateMachine.subStep === 3 && this.stateMachine.actTimer > 4.8) {
         this.stateMachine.transition('CREDITS');
+        this.targetLetterbox = 0;
         this.input.exitPointerLock();
         this.hud.showCredits(this.stats);
       }
@@ -1385,13 +1946,9 @@ export class StoryDirector {
 
     // 10B. EPILOGUE TALDYKORGAN
     if (act === 'EPILOGUE_TALDYKORGAN') {
-      this.player.setExternalCamera(
-        { x: Math.sin(this.elapsedTotal * 0.4) * 0.4, y: INSTANCE_Y.TALDYKORGAN + 1.6, z: 8 },
-        { x: 0, y: INSTANCE_Y.TALDYKORGAN + 2.5, z: -40 },
-        74,
-      );
-      if (this.stateMachine.actTimer > 8.0) {
+      if (this.stateMachine.actTimer > 11.5) {
         this.stateMachine.transition('CREDITS');
+        this.targetLetterbox = 0;
         this.input.exitPointerLock();
         this.hud.showCredits(this.stats);
       }
@@ -1402,15 +1959,12 @@ export class StoryDirector {
     const dt = Math.min(rawDt, 0.05);
     this.elapsedTotal += dt;
 
-    // Title screen slow cinematic flyover of 500x500m Cyber-Almaty!
+    // Title screen slow cinematic flyover of 500x500m Cyber-Almaty with rain & AVs!
     if (this.stateMachine.act === 'TITLE') {
       const a = this.elapsedTotal * 0.14;
-      this.player.setExternalCamera(
-        { x: Math.cos(a) * 115, y: 58, z: Math.sin(a) * 115 },
-        { x: 40, y: 24, z: -40 },
-        72,
-      );
-      this.city.update(this.elapsedTotal);
+      const camPos = { x: Math.cos(a) * 115, y: 58, z: Math.sin(a) * 115 };
+      this.player.setExternalCamera(camPos, { x: 40, y: 24, z: -40 }, 72);
+      this.city.update(this.elapsedTotal, camPos);
       this.engine.render(dt, this.fx);
       return;
     }
@@ -1421,21 +1975,24 @@ export class StoryDirector {
     }
 
     this.stats.elapsedSec += dt;
+    this.updateDialogueQueue(dt);
     const input = this.input.consumeSnapshot();
 
-    // Keyboard choice shortcuts [1]/[2]
+    // Keyboard choice shortcuts [1]/[2]/[3]
     if (this.awaitingChoice && input.choiceKey) {
-      if (this.stateMachine.act === 'HUYESHI_CYBERSPACE') {
-        this.handleChoiceSelection(input.choiceKey === '1' ? 'ending_marum' : 'ending_taldykorgan');
-      } else if (this.stateMachine.act === 'EPILOGUE_MARUM' && input.choiceKey === '1') {
-        this.handleChoiceSelection('egor_accept');
+      const picked = this.activeChoices.find((c) => c.key === input.choiceKey && !c.disabled);
+      if (picked) {
+        this.handleChoiceSelection(picked.id);
       }
     }
 
-    // Cyberware abilities
+    // Cyberware abilities (with Bolt 1 Sandevistan pitch scaling!)
     if (input.sandevistanPressed && this.player.mode === 'FREE') {
       const tRes = this.player.state.toggleSandevistan();
-      if (tRes.changed) this.audio.playSandevistan(tRes.active);
+      if (tRes.changed) {
+        this.audio.playSandevistan(tRes.active);
+        this.audio.setSandevistanMode(tRes.active);
+      }
     }
     if (input.healPressed && this.player.state.useMaxDoc()) {
       this.audio.playMaxDoc();
@@ -1444,6 +2001,7 @@ export class StoryDirector {
     const timerRes = this.player.state.updateTimers(dt);
     if (timerRes.sandevistanEnded) {
       this.audio.playSandevistan(false);
+      this.audio.setSandevistanMode(false);
     }
 
     const worldDt = dt * this.player.state.getWorldTimeScale();
@@ -1458,18 +2016,19 @@ export class StoryDirector {
     this.chunks.update(this.player.position.x, this.player.position.z, inOpenWorld, this.physics);
 
     // Interactions
-    const nearest = this.findNearestInteractable();
+    const nearest = this.player.mode === 'FREE' ? this.findNearestInteractable() : null;
     let promptLabel: string | null = nearest?.label ?? null;
     if (
       !promptLabel &&
       this.stateMachine.act === 'OPEN_WORLD' &&
       !this.vehicle.state.occupied &&
+      this.player.mode === 'FREE' &&
       this.vehicle.isPlayerNear(this.player.position.x, this.player.position.y, this.player.position.z)
     ) {
       promptLabel = '[E] СЕСТЬ В ТАКСИ «КИБЕР-АХМЕД»';
     }
     this.hud.setInteractPrompt(promptLabel);
-    if (input.interactPressed) {
+    if (input.interactPressed && (this.player.mode === 'FREE' || this.vehicle.state.occupied)) {
       this.handleInteract(nearest);
     }
 
@@ -1483,21 +2042,25 @@ export class StoryDirector {
       onPlayerHit: (dmg) => this.handlePlayerDamaged(dmg, 0.1),
     });
 
-    // Story & world tick
+    // Story & world tick (pass player.position for 3D Cyber-Rain!)
     this.updateActLogic(dt, worldDt, input);
-    this.city.update(this.elapsedTotal);
+    this.city.update(this.elapsedTotal, this.player.position);
     this.instances.update(worldDt, this.elapsedTotal);
 
-    // Post-FX decay
+    // Smooth Post-FX decay & cinema letterbox transition
     this.fx.damageVignette = Math.max(0, this.fx.damageVignette - dt * 1.4);
+    this.fx.glitch = Math.max(0, this.fx.glitch - dt * 0.9);
+    this.fx.chromaticBoost = Math.max(0, this.fx.chromaticBoost - dt * 1.1);
     this.fx.relicGlitch = Math.max(0, this.fx.relicGlitch - dt * 0.45);
     this.fx.speedLines = Math.max(0, this.fx.speedLines - dt * 1.8);
     const targetSandy = this.player.state.sandevistanActive ? 1 : 0;
     this.fx.sandevistan += (targetSandy - this.fx.sandevistan) * Math.min(1, dt * 8);
+    this.fx.letterbox += (this.targetLetterbox - this.fx.letterbox) * Math.min(1, dt * 5);
 
     // HUD updates
     this.hud.update(dt);
     this.hud.updateVitals(this.player.state, this.weapons.state);
+    this.hud.setSamirSync(this.stats.samirAffinity);
     this.hud.updateVehicleHud(
       this.vehicle.state.occupied,
       this.vehicle.state.getSpeedKmh(),

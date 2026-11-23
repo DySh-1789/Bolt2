@@ -25,6 +25,14 @@ describe('RikhardSmasherState (3-Phase Beatable Boss + Malorian Execution)', () 
     expect(boss.executeWithMalorian()).toBe(true);
     expect(boss.phase).toBe('EXECUTED');
   });
+
+  it('reduces starting HP up to 20% when Netrunner armor weakening is applied', () => {
+    const boss = new RikhardSmasherState();
+    boss.startFight();
+    const reduced = boss.setArmorWeakened(20);
+    expect(reduced).toBe(20);
+    expect(boss.hp).toBe(1120); // 1400 * 0.8
+  });
 });
 
 describe('StoryStateMachine (Full Campaign & Both Endings)', () => {

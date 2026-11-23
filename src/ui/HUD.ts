@@ -73,8 +73,14 @@ export class HUD {
   private bossPhase = document.getElementById('boss-phase')!;
   private bossFill = document.getElementById('boss-fill')!;
 
+  private huyeshiBar = document.getElementById('huyeshi-bar')!;
+  private huyeshiLabel = document.getElementById('huyeshi-label')!;
+  private huyeshiPct = document.getElementById('huyeshi-pct')!;
+  private huyeshiFill = document.getElementById('huyeshi-fill')!;
+
   private tengeVal = document.getElementById('tenge-val')!;
   private credVal = document.getElementById('cred-val')!;
+  private syncVal = document.getElementById('sync-val')!;
   private ripperTenge = document.getElementById('ripper-tenge')!;
   private ripperItemsEl = document.getElementById('ripper-items')!;
 
@@ -215,14 +221,35 @@ export class HUD {
     this.subtitleTimer = 0;
   }
 
+  setCombatHudVisible(visible: boolean): void {
+    this.hudLayer.classList.toggle('cinematic-mode', !visible);
+  }
+
+  setSamirSync(percent: number): void {
+    this.syncVal.textContent = `${Math.round(percent)}%`;
+  }
+
+  setHuyeshiProgress(visible: boolean, ratio = 0, label = 'ХУЕШИ // РАЗДЕЛЕНИЕ СОЗНАНИЯ'): void {
+    this.huyeshiBar.classList.toggle('hidden', !visible);
+    if (visible) {
+      const clamped = Math.max(0, Math.min(1, ratio));
+      this.huyeshiLabel.textContent = label;
+      this.huyeshiPct.textContent = `${Math.round(clamped * 100)}%`;
+      this.huyeshiFill.style.width = `${clamped * 100}%`;
+    }
+  }
+
   showChoices(title: string, choices: DialogueChoice[]): void {
     this.choiceTitle.textContent = title;
     this.choiceList.innerHTML = '';
     for (const c of choices) {
       const btn = document.createElement('button');
       btn.className = 'choice-btn';
+      btn.disabled = Boolean(c.disabled);
       btn.innerHTML = `<strong>[${c.key}]</strong> ${c.text}${c.subtext ? `<small>${c.subtext}</small>` : ''}`;
-      btn.addEventListener('click', () => this.callbacks.onChoiceSelect(c.id));
+      if (!c.disabled) {
+        btn.addEventListener('click', () => this.callbacks.onChoiceSelect(c.id));
+      }
       this.choiceList.appendChild(btn);
     }
     this.choiceOverlay.classList.remove('hidden');
@@ -575,9 +602,17 @@ export class HUD {
     const mins = Math.floor(stats.elapsedSec / 60);
     const secs = Math.floor(stats.elapsedSec % 60);
     const accuracy = stats.shotsFired > 0 ? Math.round((stats.shotsHit / stats.shotsFired) * 100) : 0;
+    const approachLabel =
+      stats.assaultApproach === 'netrunner'
+        ? 'НЕТРАННЕР'
+        : stats.assaultApproach === 'eblanhana'
+          ? 'ЕБЛАНХАНА'
+          : 'ПРОРЫВ 2026';
 
     this.statsGrid.innerHTML = `
       <div class="stat-card"><span>ВРЕМЯ В ИГРЕ</span><strong>${mins}м ${secs}с</strong></div>
+      <div class="stat-card"><span>СИНХР. С САМИРОМ</span><strong>${stats.samirAffinity}%</strong></div>
+      <div class="stat-card"><span>ПЛАН ШТУРМА</span><strong>${approachLabel}</strong></div>
       <div class="stat-card"><span>ВРАГОВ УСТРАНЕНО</span><strong>${stats.enemiesEliminated}</strong></div>
       <div class="stat-card"><span>УБИЙСТВ КЛИНКАМИ</span><strong>${stats.meleeKills}</strong></div>
       <div class="stat-card"><span>ТОЧНОСТЬ / ХЕДШОТЫ</span><strong>${accuracy}% / ${stats.headshots}</strong></div>

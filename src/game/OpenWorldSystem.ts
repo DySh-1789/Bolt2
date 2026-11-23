@@ -175,6 +175,28 @@ export function getGigEnemyWave(gigId: string): EnemySpawnConfig[] {
   }
 }
 
+export interface AssaultBonusItem {
+  id: 'netrunner_intel' | 'eblanhana_support' | 'samir_malorian';
+  title: string;
+  unlocked: boolean;
+  effectText: string;
+  unlockHint: string;
+}
+
+export interface AssaultBonusesSummary {
+  hasNetrunnerIntel: boolean;
+  hasEblanhanaSupport: boolean;
+  hasSamirMalorian: boolean;
+  smasherArmorReductionPercent: number;
+  disableLobbyTurrets: boolean;
+  grantFullArmor: boolean;
+  bonusMaxDocCharges: number;
+  completedGigs: number;
+  totalGigs: number;
+  unlockedCount: number;
+  items: AssaultBonusItem[];
+}
+
 /**
  * Pure Open-World quest & district state tracker (unit-testable).
  */
@@ -234,5 +256,65 @@ export class OpenWorldState {
     if (this.visitedDistricts.has(id)) return false;
     this.visitedDistricts.add(id);
     return true;
+  }
+
+  hasNetrunnerIntel(): boolean {
+    return this.gigs.get('gig_tastak_hack')?.status === 'completed';
+  }
+
+  hasEblanhanaSupport(streetCred: number): boolean {
+    return streetCred >= 5 || this.getCompletedCount() >= 2;
+  }
+
+  hasSamirMalorian(): boolean {
+    return this.gigs.get('gig_malorian')?.status === 'completed';
+  }
+
+  /**
+   * Summarizes all nonlinear tactical advantages unlocked across Cyber-Almaty for the Marakulin Tower assault.
+   */
+  getAssaultBonuses(streetCred: number): AssaultBonusesSummary {
+    const netrunner = this.hasNetrunnerIntel();
+    const eblanhana = this.hasEblanhanaSupport(streetCred);
+    const malorian = this.hasSamirMalorian();
+    const completedGigs = this.getCompletedCount();
+
+    const items: AssaultBonusItem[] = [
+      {
+        id: 'netrunner_intel',
+        title: 'БЭКДОР РЕТРАНСЛЯТОРА ТАСТАКА',
+        unlocked: netrunner,
+        effectText: 'Отключает турели холла башни и ослабляет броню Рихарда Смэшера на 20%',
+        unlockHint: 'Выполните заказ «Ретранслятор Тастака» в Кибер-Тастаке',
+      },
+      {
+        id: 'eblanhana_support',
+        title: 'ПОДДЕРЖКА ЕБЛАНХАНЫ И КИБЕР-АХМЕДА',
+        unlocked: eblanhana,
+        effectText: 'Полный заряд брони, +2 ингалятора MaxDoc и тактический сброс у входа',
+        unlockHint: 'Достигните REP ≥ 5 или выполните минимум 2 заказа в Кибер-Алматы',
+      },
+      {
+        id: 'samir_malorian',
+        title: 'ЛЕГЕНДАРНЫЙ MALORIAN S-3516 САМИРА',
+        unlocked: malorian,
+        effectText: 'Доступен культовый пистолет Самира для штурма и финальной казни Смэшера',
+        unlockHint: 'Выполните заказ «Наследие Самира» в Кибер-Тастаке',
+      },
+    ];
+
+    return {
+      hasNetrunnerIntel: netrunner,
+      hasEblanhanaSupport: eblanhana,
+      hasSamirMalorian: malorian,
+      smasherArmorReductionPercent: netrunner ? 20 : 0,
+      disableLobbyTurrets: netrunner,
+      grantFullArmor: eblanhana,
+      bonusMaxDocCharges: eblanhana ? 2 : 0,
+      completedGigs,
+      totalGigs: OPEN_WORLD_GIGS.length,
+      unlockedCount: items.filter((item) => item.unlocked).length,
+      items,
+    };
   }
 }

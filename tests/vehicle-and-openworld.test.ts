@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { PhysicsWorld } from '../src/engine/Physics';
 import { CyberAkhmedState } from '../src/game/VehicleSystem';
 import { OpenWorldState } from '../src/game/OpenWorldSystem';
-import { formatDialogueText } from '../src/game/DialogueLibrary';
+import {
+  formatDialogueText,
+  getAssaultPlanChoices,
+  getCyberspaceFarewellLines,
+} from '../src/game/DialogueLibrary';
 import { getDistrictAt } from '../src/types/game';
 
 describe('CyberAkhmedState (Drivable Taxi & Autopilot)', () => {
@@ -60,5 +64,34 @@ describe('OpenWorldState, Districts, and Dialogue Censorship', () => {
     expect(clean).not.toContain('ебанат');
     expect(clean).not.toContain('блять');
     expect(clean).toContain('Микоши');
+  });
+
+  it('unlocks linear-nonlinear assault approaches and customizes farewells by Samir affinity', () => {
+    const ow = new OpenWorldState();
+    expect(ow.hasNetrunnerIntel()).toBe(false);
+    ow.completeGig('gig_tastak_hack');
+    ow.completeGig('gig_malorian');
+    expect(ow.hasNetrunnerIntel()).toBe(true);
+    expect(ow.hasEblanhanaSupport(5)).toBe(true);
+
+    const bonuses = ow.getAssaultBonuses(5);
+    expect(bonuses.smasherArmorReductionPercent).toBe(20);
+    expect(bonuses.disableLobbyTurrets).toBe(true);
+    expect(bonuses.grantFullArmor).toBe(true);
+
+    const choices = getAssaultPlanChoices({
+      hasNetrunnerIntel: true,
+      hasEblanhanaSupport: true,
+      censored: false,
+    });
+    expect(choices.length).toBe(3);
+    expect(choices.every((c) => !c.disabled)).toBe(true);
+
+    const highSync = getCyberspaceFarewellLines('taldykorgan', 85, false);
+    const lowSync = getCyberspaceFarewellLines('taldykorgan', 20, false);
+    expect(highSync.length).toBeGreaterThan(0);
+    expect(highSync.map((l) => l.text).join(' ')).not.toBe(
+      lowSync.map((l) => l.text).join(' '),
+    );
   });
 });

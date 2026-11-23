@@ -68,7 +68,11 @@ export type CameraMode =
   | 'CHASE_PASSENGER'
   | 'VEHICLE_FIRST'
   | 'VEHICLE_THIRD'
-  | 'FALLEN';
+  | 'FALLEN'
+  | 'ROOFTOP_SIT'
+  | 'EXECUTION'
+  | 'HUYESHI_CHAIR'
+  | 'CHOKED';
 
 export type MusicIntensity =
   | 'silent'
@@ -79,7 +83,11 @@ export type MusicIntensity =
   | 'chase'
   | 'boss'
   | 'cyberspace'
-  | 'taldykorgan';
+  | 'taldykorgan'
+  | 'operating'
+  | 'soulkiller';
+
+export type AssaultApproach = 'frontal' | 'netrunner' | 'eblanhana';
 
 export interface Vec3 {
   x: number;
@@ -123,9 +131,12 @@ export interface SubtitleEvent {
 
 export interface DialogueChoice {
   id: string;
-  key: '1' | '2';
+  key: '1' | '2' | '3';
   text: string;
   subtext?: string;
+  affinityDelta?: number;
+  approach?: AssaultApproach;
+  disabled?: boolean;
 }
 
 export interface UpgradeState {
@@ -181,6 +192,8 @@ export interface RunStats {
   distanceDrivenMeters: number;
   deaths: number;
   endingId: 'marum' | 'taldykorgan' | '';
+  samirAffinity: number;
+  assaultApproach: AssaultApproach;
 }
 
 export interface PostFxState {
@@ -193,6 +206,8 @@ export interface PostFxState {
   blackout: number;
   eyelids: number;
   chromaticBoost: number;
+  soulkiller: number;
+  letterbox: number;
 }
 
 export interface CheckpointData {
@@ -309,6 +324,8 @@ export function createInitialRunStats(): RunStats {
     distanceDrivenMeters: 0,
     deaths: 0,
     endingId: '',
+    samirAffinity: 50,
+    assaultApproach: 'frontal',
   };
 }
 
@@ -323,5 +340,7 @@ export function createDefaultPostFx(): PostFxState {
     blackout: 0,
     eyelids: 0,
     chromaticBoost: 0,
+    soulkiller: 0,
+    letterbox: 0,
   };
 }

@@ -11,7 +11,7 @@
     <!-- IN-GAME HUD -->
     <div id="hud-layer" class="hidden">
       <!-- Top-Left: Minimap + District + Chunk Telemetry -->
-      <div class="hud-topleft">
+      <div class="hud-topleft combat-hud">
         <div class="minimap-frame">
           <canvas id="minimap-canvas" width="164" height="164"></canvas>
           <div id="chunk-badge" class="chunk-badge">ЧАНК 5,5 • 49/100</div>
@@ -22,10 +22,10 @@
         </div>
       </div>
 
-      <!-- Top-Center: Objective + Boss Bar -->
+      <!-- Top-Center: Objective + Boss Bar + Huyeshi Extraction -->
       <div class="hud-topcenter">
         <div id="act-banner" class="act-banner hidden"></div>
-        <div id="objective-box" class="objective-box">
+        <div id="objective-box" class="objective-box combat-hud">
           <span class="obj-tag">ЦЕЛЬ</span>
           <span id="objective-text">ИССЛЕДУЙТЕ КИБЕР-АЛМАТЫ</span>
         </div>
@@ -38,13 +38,23 @@
             <div id="boss-fill" class="boss-fill" style="width: 100%"></div>
           </div>
         </div>
+        <div id="huyeshi-bar" class="huyeshi-bar hidden">
+          <div class="boss-header">
+            <span id="huyeshi-label">ХУЕШИ // РАЗДЕЛЕНИЕ СОЗНАНИЯ</span>
+            <span id="huyeshi-pct">0%</span>
+          </div>
+          <div class="boss-track">
+            <div id="huyeshi-fill" class="huyeshi-fill" style="width: 0%"></div>
+          </div>
+        </div>
       </div>
 
-      <!-- Top-Right: Economy & Quick Keys -->
-      <div class="hud-topright">
+      <!-- Top-Right: Economy, Samir Sync & Quick Keys -->
+      <div class="hud-topright combat-hud">
         <div class="econ-row">
           <span class="tenge-badge"><strong id="tenge-val">1500</strong> ₸</span>
           <span class="cred-badge">REP <strong id="cred-val">1</strong></span>
+          <span class="sync-badge">САМИР <strong id="sync-val">50%</strong></span>
         </div>
         <div class="quick-hints">
           <span>[M] Карта</span>
@@ -101,7 +111,7 @@
       </div>
 
       <!-- Bottom-Left: Vitals & Cyberware -->
-      <div class="hud-bottomleft">
+      <div class="hud-bottomleft combat-hud">
         <div class="vital-row">
           <span class="vital-label">HP</span>
           <div class="bar-track"><div id="hp-fill" class="bar-fill red" style="width: 100%"></div></div>
@@ -121,7 +131,7 @@
       </div>
 
       <!-- Bottom-Right: Active Weapon & 5 Slots -->
-      <div class="hud-bottomright">
+      <div class="hud-bottomright combat-hud">
         <div id="weapon-name" class="weapon-name">АЛАТАУ-19</div>
         <div id="ammo-display" class="ammo-display">12 / 12</div>
         <div id="weapon-slots" class="weapon-slots"></div>

@@ -12,18 +12,36 @@ export class RikhardSmasherState {
   phase: BossPhase = 'DORMANT';
   readonly phase2Threshold = 0.65;
   readonly phase3Threshold = 0.3;
+  armorWeakenedPercent = 0;
 
   reset(): void {
     this.hp = this.maxHp;
     this.phase = 'DORMANT';
+    this.armorWeakenedPercent = 0;
   }
 
   getHpRatio(): number {
     return this.hp / this.maxHp;
   }
 
+  /**
+   * Applies Netrunner armor weakening (clamped to 0..20% starting HP reduction).
+   * Works whether invoked before startFight() or while the fight is active.
+   */
+  setArmorWeakened(percent: number): number {
+    const clamped = Math.max(0, Math.min(20, Math.round(percent)));
+    this.armorWeakenedPercent = clamped;
+    const weakenedCap = Math.round(this.maxHp * (1 - clamped / 100));
+    if (this.phase === 'PHASE_1' || this.phase === 'PHASE_2' || this.phase === 'PHASE_3') {
+      this.hp = Math.min(this.hp, weakenedCap);
+    } else if (this.phase === 'DORMANT') {
+      this.hp = weakenedCap;
+    }
+    return clamped;
+  }
+
   startFight(): void {
-    this.hp = this.maxHp;
+    this.hp = Math.round(this.maxHp * (1 - this.armorWeakenedPercent / 100));
     this.phase = 'PHASE_1';
   }
 
@@ -97,6 +115,13 @@ interface AfterimageGhost {
   maxLife: number;
 }
 
+interface ArmorSpark {
+  mesh: THREE.Mesh;
+  velocity: THREE.Vector3;
+  life: number;
+  maxLife: number;
+}
+
 export interface SmasherHitResult {
   hit: boolean;
   headshot: boolean;
@@ -115,7 +140,10 @@ export interface SmasherCallbacks {
 }
 
 /**
- * 3-meter Cyborg Boss — Rikhard Smasher (borrowed & enhanced from Bolt 1!).
+ * Towering 3.1-meter full-borg juggernaut — Rikhard Smasher (evolved from Bolt 1's Lev Smasher).
+ * Features articulated hydraulic legs, ribbed chest plates, crimson reactor core & dorsal spine tubes,
+ * armored cyber-skull with glowing red optic slit, shoulder rocket pod, 6-barrel rotary autocannon,
+ * and massive hydraulic cyber-claw.
  */
 export class RikhardSmasherBoss {
   readonly state = new RikhardSmasherState();
@@ -123,14 +151,22 @@ export class RikhardSmasherBoss {
 
   private bodyHitbox!: THREE.Mesh;
   private headHitbox!: THREE.Mesh;
+  private hitMeshes: THREE.Object3D[] = [];
+  private leftLegPivot!: THREE.Group;
+  private rightLegPivot!: THREE.Group;
   private rightCannon!: THREE.Group;
+  private rotaryBarrels!: THREE.Group;
   private leftClaw!: THREE.Group;
-  private visorMat!: THREE.MeshBasicMaterial;
+  private muzzleGlow!: THREE.Mesh;
+  private coreMat!: THREE.MeshStandardMaterial;
+  private chestPlateMat!: THREE.MeshStandardMaterial;
+  private auraLight!: THREE.PointLight;
 
   private projectiles: BossProjectile[] = [];
   private missiles: TelegraphMissile[] = [];
   private shockwaves: ShockwaveRing[] = [];
   private ghosts: AfterimageGhost[] = [];
+  private sparks: ArmorSpark[] = [];
 
   private scene: THREE.Scene;
   private raycaster = new THREE.Raycaster();
@@ -140,6 +176,9 @@ export class RikhardSmasherBoss {
   private dashTimer = 5.5;
   private shockwaveTimer = 7.0;
   private flashTimer = 0;
+  private sparkTimer = 0;
+  private walkCycle = 0;
+  private rotarySpinSpeed = 0;
 
   constructor(scene: THREE.Scene, arenaFloorY: number) {
     this.scene = scene;
@@ -150,72 +189,304 @@ export class RikhardSmasherBoss {
   }
 
   private buildModel(): void {
-    const obsidian = new THREE.MeshStandardMaterial({ color: 0x141722, metalness: 0.88, roughness: 0.24 });
-    const chrome = new THREE.MeshStandardMaterial({ color: 0x627394, metalness: 0.92, roughness: 0.18 });
-    this.visorMat = new THREE.MeshBasicMaterial({ color: 0xff003c });
+    const darkArmor = new THREE.MeshStandardMaterial({
+      color: 0x262c3d,
+      metalness: 0.72,
+      roughness: 0.28,
+    });
+    const gunmetal = new THREE.MeshStandardMaterial({
+      color: 0x56647d,
+      metalness: 0.84,
+      roughness: 0.22,
+    });
+    const crimsonAccent = new THREE.MeshStandardMaterial({
+      color: 0xb81432,
+      metalness: 0.56,
+      roughness: 0.32,
+    });
+    this.chestPlateMat = crimsonAccent.clone();
+    this.coreMat = new THREE.MeshStandardMaterial({
+      color: 0xff003c,
+      emissive: 0xff003c,
+      emissiveIntensity: 3.2,
+      roughness: 0.2,
+      metalness: 0.2,
+    });
 
-    // Massive armored cyber-legs (3m tall!)
+    const hitList: THREE.Object3D[] = [];
+    const registerBodyHit = (mesh: THREE.Mesh) => {
+      mesh.userData = { isBoss: true, isHead: false };
+      hitList.push(mesh);
+      return mesh;
+    };
+    const registerHeadHit = (mesh: THREE.Mesh) => {
+      mesh.userData = { isBoss: true, isHead: true };
+      hitList.push(mesh);
+      return mesh;
+    };
+
+    // 1. Heavy articulated hydraulic legs (armored boots, shins, calf pistons, knee guards, thighs)
+    const buildLeg = (side: -1 | 1): THREE.Group => {
+      const pivot = new THREE.Group();
+      pivot.position.set(side * 0.48, 1.32, 0);
+
+      // Upper armored thigh
+      const thigh = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.62, 0.58), darkArmor));
+      thigh.position.set(0, -0.32, 0);
+      pivot.add(thigh);
+
+      // Thigh side hydraulic damper
+      const thighPiston = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.52, 8), gunmetal);
+      thighPiston.position.set(side * 0.28, -0.34, 0.04);
+      pivot.add(thighPiston);
+
+      // Reinforced crimson knee guard
+      const knee = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.3, 0.66), crimsonAccent));
+      knee.position.set(0, -0.62, 0.08);
+      pivot.add(knee);
+
+      // Armored shin
+      const shin = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.58, 0.52), darkArmor));
+      shin.position.set(0, -0.98, -0.02);
+      pivot.add(shin);
+
+      // Rear calf hydraulic cylinder
+      const calfPiston = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.06, 0.54, 8), gunmetal);
+      calfPiston.position.set(0, -0.96, -0.31);
+      calfPiston.rotation.x = 0.14;
+      pivot.add(calfPiston);
+
+      // Massive armored cyber-boot
+      const boot = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.22, 0.78), gunmetal));
+      boot.position.set(0, -1.21, 0.1);
+      pivot.add(boot);
+
+      return pivot;
+    };
+
+    this.leftLegPivot = buildLeg(-1);
+    this.rightLegPivot = buildLeg(1);
+    this.group.add(this.leftLegPivot, this.rightLegPivot);
+
+    // Armored pelvis & waist hydraulics
+    const pelvis = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(1.18, 0.34, 0.8), gunmetal));
+    pelvis.position.set(0, 1.34, 0);
+    this.group.add(pelvis);
+
     for (const sx of [-0.52, 0.52]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1.35, 0.62), obsidian);
-      leg.position.set(sx, 0.68, 0);
-      this.group.add(leg);
-      const knee = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.24, 0.68), chrome);
-      knee.position.set(sx, 0.85, 0.05);
-      this.group.add(knee);
+      const waistPiston = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.42, 8), gunmetal);
+      waistPiston.position.set(sx, 1.48, 0.22);
+      waistPiston.rotation.z = sx > 0 ? 0.15 : -0.15;
+      this.group.add(waistPiston);
     }
 
-    // Hulking exo-torso
-    this.bodyHitbox = new THREE.Mesh(new THREE.BoxGeometry(1.65, 1.38, 1.05), obsidian);
+    // 2. Massive armored exo-torso (Primary Body Hitbox)
+    this.bodyHitbox = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(1.58, 1.34, 0.98), darkArmor));
     this.bodyHitbox.position.set(0, 1.98, 0);
     this.group.add(this.bodyHitbox);
 
-    // Shoulder pauldrons & missile pod
-    for (const sx of [-1.05, 1.05]) {
-      const pauldron = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.65, 0.95), chrome);
-      pauldron.position.set(sx, 2.52, 0);
-      this.group.add(pauldron);
+    // Hydraulic ribbed chest plates + pectoral armor + glowing crimson reactor core
+    const chestPlate = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(1.28, 0.74, 0.26), this.chestPlateMat));
+    chestPlate.position.set(0, 2.06, 0.46);
+    this.group.add(chestPlate);
+
+    for (const sx of [-0.36, 0.36]) {
+      const pecPlate = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.36, 0.16), gunmetal));
+      pecPlate.position.set(sx, 2.26, 0.56);
+      pecPlate.rotation.y = sx > 0 ? -0.16 : 0.16;
+      this.group.add(pecPlate);
+
+      const chestPiston = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.64, 8), gunmetal);
+      chestPiston.position.set(sx * 1.65, 1.96, 0.48);
+      this.group.add(chestPiston);
     }
 
-    const pod = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.45, 0.65), obsidian);
-    pod.position.set(-1.12, 2.95, -0.1);
-    this.group.add(pod);
+    const reactorRing = new THREE.Mesh(new THREE.CylinderGeometry(0.29, 0.29, 0.18, 14), gunmetal);
+    reactorRing.rotation.x = Math.PI / 2;
+    reactorRing.position.set(0, 2.02, 0.54);
+    this.group.add(reactorRing);
 
-    const reactor = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.16, 12), this.visorMat);
-    reactor.rotation.x = Math.PI / 2;
-    reactor.position.set(0, 2.08, 0.52);
-    this.group.add(reactor);
+    const reactorCore = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.21, 0.26, 14), this.coreMat);
+    reactorCore.rotation.x = Math.PI / 2;
+    reactorCore.position.set(0, 2.02, 0.56);
+    this.group.add(reactorCore);
 
-    // Cyber-skull head
-    this.headHitbox = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.54, 0.54), chrome);
-    this.headHitbox.position.set(0, 2.92, 0.08);
+    // Armored neck collar
+    const collar = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.24, 0.78), gunmetal));
+    collar.position.set(0, 2.66, -0.02);
+    this.group.add(collar);
+
+    // 3. Dorsal armored spine & glowing crimson spine power tubes (iconic Sandevistan cyber-spine!)
+    const spineHousing = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.46, 1.18, 0.34), gunmetal));
+    spineHousing.position.set(0, 2.02, -0.56);
+    this.group.add(spineHousing);
+
+    for (let i = 0; i < 4; i++) {
+      const vy = 1.6 + i * 0.26;
+      const vertebra = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.12, 0.24), darkArmor);
+      vertebra.position.set(0, vy, -0.66);
+      this.group.add(vertebra);
+
+      for (const sx of [-0.28, 0.28]) {
+        const spineTube = new THREE.Mesh(new THREE.CylinderGeometry(0.048, 0.048, 0.22, 8), this.coreMat);
+        spineTube.position.set(sx, vy, -0.62);
+        this.group.add(spineTube);
+      }
+    }
+
+    // 4. Heavy angled shoulder pauldrons & multi-tube shoulder rocket pod
+    for (const sx of [-1.06, 1.06]) {
+      const pauldron = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.58, 0.96), gunmetal));
+      pauldron.position.set(sx, 2.52, 0);
+      pauldron.rotation.z = sx < 0 ? 0.18 : -0.18;
+      this.group.add(pauldron);
+
+      const trim = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.1, 0.98), crimsonAccent);
+      trim.position.set(sx, 2.74, 0);
+      trim.rotation.z = sx < 0 ? 0.18 : -0.18;
+      this.group.add(trim);
+    }
+
+    // Left shoulder heavy rocket pod with 6 glowing crimson missile tubes
+    const missilePod = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.56, 0.86), crimsonAccent));
+    missilePod.position.set(-1.02, 2.98, -0.05);
+    this.group.add(missilePod);
+
+    const podFrame = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.6, 0.14), darkArmor);
+    podFrame.position.set(-1.02, 2.98, 0.36);
+    this.group.add(podFrame);
+
+    for (const mx of [-0.18, 0, 0.18]) {
+      for (const my of [-0.12, 0.12]) {
+        const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.072, 0.072, 0.2, 8), this.coreMat);
+        tube.rotation.x = Math.PI / 2;
+        tube.position.set(-1.02 + mx, 2.98 + my, 0.42);
+        this.group.add(tube);
+      }
+    }
+
+    // 5. Armored cyber-skull head with glowing red optic slit & jaw grille
+    this.headHitbox = registerHeadHit(new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.58, 0.58), gunmetal));
+    this.headHitbox.position.set(0, 2.9, 0.14);
     this.group.add(this.headHitbox);
 
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.14, 0.12), this.visorMat);
-    visor.position.set(0, 2.94, 0.36);
-    this.group.add(visor);
+    const brow = registerHeadHit(new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.09, 0.16), crimsonAccent));
+    brow.position.set(0, 0.17, 0.27);
 
-    // Right arm heavy autocannon
+    const opticSlit = registerHeadHit(new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.09, 0.1), this.coreMat));
+    opticSlit.position.set(0, 0.06, 0.28);
+
+    const jawGrille = registerHeadHit(new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.17, 0.14), darkArmor));
+    jawGrille.position.set(0, -0.14, 0.26);
+
+    const crest = registerHeadHit(new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.1, 0.54), darkArmor));
+    crest.position.set(0, 0.31, -0.02);
+
+    this.headHitbox.add(brow, opticSlit, jawGrille, crest);
+
+    // 6. Right arm: multi-barrel rotary autocannon
     this.rightCannon = new THREE.Group();
-    this.rightCannon.position.set(1.18, 2.05, 0.2);
-    const armR = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.95, 0.38), obsidian);
-    armR.position.y = -0.35;
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 1.35, 10), chrome);
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, -0.55, 0.65);
-    this.rightCannon.add(armR, barrel);
+    this.rightCannon.position.set(1.14, 2.26, 0.1);
+
+    const armR = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.38, 1.05, 0.42), darkArmor));
+    armR.position.set(0, -0.35, 0.2);
+    armR.rotation.x = -0.62;
+    this.rightCannon.add(armR);
+
+    const cannonShroud = registerBodyHit(new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.25, 0.68, 10), gunmetal));
+    cannonShroud.rotation.x = Math.PI / 2;
+    cannonShroud.position.set(0, -0.58, 0.72);
+    this.rightCannon.add(cannonShroud);
+
+    // 6-barrel spinning rotary cluster
+    this.rotaryBarrels = new THREE.Group();
+    this.rotaryBarrels.position.set(0, -0.58, 1.32);
+    for (let b = 0; b < 6; b++) {
+      const ang = (b / 6) * Math.PI * 2;
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.036, 1.08, 6), gunmetal);
+      barrel.rotation.x = Math.PI / 2;
+      barrel.position.set(Math.cos(ang) * 0.11, Math.sin(ang) * 0.11, 0);
+      this.rotaryBarrels.add(barrel);
+    }
+    const barrelClamp = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.1, 10), crimsonAccent);
+    barrelClamp.rotation.x = Math.PI / 2;
+    barrelClamp.position.set(0, 0, 0.32);
+    this.rotaryBarrels.add(barrelClamp);
+    this.rightCannon.add(this.rotaryBarrels);
+
+    this.muzzleGlow = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.12, 10), this.coreMat);
+    this.muzzleGlow.rotation.x = Math.PI / 2;
+    this.muzzleGlow.position.set(0, -0.58, 1.86);
+    this.rightCannon.add(this.muzzleGlow);
     this.group.add(this.rightCannon);
 
-    // Left arm hydraulic claw
+    // 7. Left arm: massive hydraulic cyber-claw
     this.leftClaw = new THREE.Group();
-    this.leftClaw.position.set(-1.18, 2.05, 0.2);
-    const armL = new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.05, 0.42), obsidian);
-    armL.position.y = -0.4;
+    this.leftClaw.position.set(-1.14, 2.26, 0.1);
+
+    const armL = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.12, 0.44), darkArmor));
+    armL.position.set(0, -0.42, 0.16);
+    armL.rotation.x = -0.35;
     this.leftClaw.add(armL);
+
+    const armLPiston = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.72, 8), gunmetal);
+    armLPiston.position.set(-0.24, -0.46, 0.24);
+    armLPiston.rotation.x = -0.35;
+    this.leftClaw.add(armLPiston);
+
+    const clawHousing = registerBodyHit(new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.46, 0.56), crimsonAccent));
+    clawHousing.position.set(0, -0.92, 0.44);
+    this.leftClaw.add(clawHousing);
+
+    // 3 heavy hydraulic cyber-claw pincers
+    for (const cx of [-0.18, 0, 0.18]) {
+      const pincer = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.13, 0.52), gunmetal);
+      pincer.position.set(cx, -0.96, 0.84);
+      pincer.rotation.x = 0.22;
+      pincer.rotation.y = cx * -0.45;
+      this.leftClaw.add(pincer);
+    }
+    const thumbClaw = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.14, 0.42), gunmetal);
+    thumbClaw.position.set(0.24, -0.78, 0.72);
+    thumbClaw.rotation.x = -0.25;
+    thumbClaw.rotation.y = -0.35;
+    this.leftClaw.add(thumbClaw);
+
     this.group.add(this.leftClaw);
 
-    const auraLight = new THREE.PointLight(0xff003c, 4.5, 16);
-    auraLight.position.set(0, 2.5, 0.8);
-    this.group.add(auraLight);
+    // Enable shadow casting across the full 3m cyber-frame
+    this.group.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+      }
+    });
+
+    // Menacing crimson aura light
+    this.auraLight = new THREE.PointLight(0xff1a48, 8.5, 16, 1.5);
+    this.auraLight.position.set(0, 2.35, 0.85);
+    this.group.add(this.auraLight);
+
+    this.hitMeshes = hitList;
+  }
+
+  /**
+   * Weakens Rikhard Smasher's armor via Netrunner breach (up to 20% starting HP reduction)
+   * and triggers visible electrical armor sparking on his chest/shoulders.
+   */
+  setArmorWeakened(percent: number): number {
+    const applied = this.state.setArmorWeakened(percent);
+    if (applied > 0) {
+      this.chestPlateMat.emissive.setHex(0x00d8ff);
+      this.chestPlateMat.emissiveIntensity = 0.45;
+      if (this.group.visible) {
+        this.spawnArmorSparks(10);
+      }
+    } else {
+      this.chestPlateMat.emissive.setHex(0x000000);
+      this.chestPlateMat.emissiveIntensity = 0;
+    }
+    return applied;
   }
 
   activateAt(x: number, y: number, z: number): void {
@@ -224,16 +495,34 @@ export class RikhardSmasherBoss {
     this.clearEffects();
     this.group.position.set(x, y, z);
     this.group.rotation.set(0, 0, 0);
+    this.leftLegPivot.rotation.set(0, 0, 0);
+    this.rightLegPivot.rotation.set(0, 0, 0);
+    this.rightCannon.rotation.set(0, 0, 0);
+    this.leftClaw.rotation.set(0, 0, 0);
     this.group.visible = true;
     this.burstTimer = 1.4;
     this.missileTimer = 3.8;
     this.dashTimer = 5.0;
     this.shockwaveTimer = 6.8;
+    this.walkCycle = 0;
+    this.rotarySpinSpeed = 0;
+    this.sparkTimer = 0.08;
+    if (this.state.armorWeakenedPercent > 0) {
+      this.chestPlateMat.emissive.setHex(0x00d8ff);
+      this.chestPlateMat.emissiveIntensity = 0.45;
+      this.spawnArmorSparks(12);
+    } else {
+      this.chestPlateMat.emissive.setHex(0x000000);
+      this.chestPlateMat.emissiveIntensity = 0;
+    }
+    this.group.updateMatrixWorld(true);
   }
 
   deactivate(): void {
     this.state.reset();
     this.clearEffects();
+    this.chestPlateMat.emissive.setHex(0x000000);
+    this.chestPlateMat.emissiveIntensity = 0;
     this.group.visible = false;
   }
 
@@ -249,10 +538,59 @@ export class RikhardSmasherBoss {
     this.shockwaves = [];
     for (const g of this.ghosts) this.scene.remove(g.mesh);
     this.ghosts = [];
+    for (const s of this.sparks) this.scene.remove(s.mesh);
+    this.sparks = [];
   }
 
   getPosition(): THREE.Vector3 {
     return this.group.position;
+  }
+
+  /**
+   * Returns Rikhard Smasher's cyber-skull head position in world space
+   * for interactive Malorian execution framing and camera targeting.
+   */
+  getHeadWorldPosition(): THREE.Vector3 {
+    this.group.updateMatrixWorld(true);
+    return this.headHitbox.getWorldPosition(new THREE.Vector3());
+  }
+
+  /**
+   * Positions staggered Rikhard Smasher kneeling directly in front of the player
+   * for the cinematic Bolt-1-style interactive Malorian execution cutscene.
+   */
+  positionForExecution(playerPos: Vec3): Vec3 {
+    this.clearEffects();
+    this.group.visible = true;
+
+    let dirX = this.group.position.x - playerPos.x;
+    let dirZ = this.group.position.z - playerPos.z;
+    const len = Math.hypot(dirX, dirZ);
+    if (len < 0.01) {
+      dirX = 0;
+      dirZ = -1;
+    } else {
+      dirX /= len;
+      dirZ /= len;
+    }
+
+    const execDist = 2.35;
+    const tx = playerPos.x + dirX * execDist;
+    const tz = playerPos.z + dirZ * execDist;
+    const ty = this.arenaFloorY - 0.58;
+
+    this.group.position.set(tx, ty, tz);
+    this.group.rotation.set(0.28, Math.atan2(playerPos.x - tx, playerPos.z - tz), 0);
+    this.leftLegPivot.rotation.x = 0.72;
+    this.rightLegPivot.rotation.x = -0.35;
+    this.rightCannon.rotation.x = 0.45;
+    this.leftClaw.rotation.x = 0.55;
+    this.coreMat.color.setHex(0xfcee0a);
+    this.coreMat.emissive.setHex(0xfcee0a);
+    this.group.updateMatrixWorld(true);
+    this.spawnArmorSparks(10);
+
+    return { x: tx, y: ty, z: tz };
   }
 
   checkBulletHit(
@@ -278,11 +616,11 @@ export class RikhardSmasherBoss {
     this.raycaster.set(origin, dir);
     this.raycaster.near = 0.05;
     this.raycaster.far = maxDist;
-    const hits = this.raycaster.intersectObjects([this.headHitbox, this.bodyHitbox], false);
+    const hits = this.raycaster.intersectObjects(this.hitMeshes, false);
     if (hits.length === 0) return empty;
 
     const first = hits[0];
-    const headshot = first.object === this.headHitbox;
+    const headshot = Boolean(first.object.userData?.isHead) || first.object === this.headHitbox;
     const dmg = Math.round(baseDamage * (headshot ? headshotMult : 1));
     const res = this.state.applyDamage(dmg);
     this.flashTimer = 0.1;
@@ -329,6 +667,32 @@ export class RikhardSmasherBoss {
     this.clearEffects();
     this.group.rotation.x = -Math.PI / 2;
     this.group.position.y = this.arenaFloorY + 0.45;
+    this.coreMat.color.setHex(0x2a0810);
+    this.coreMat.emissive.setHex(0x000000);
+    this.auraLight.intensity = 0.4;
+    this.group.updateMatrixWorld(true);
+  }
+
+  private spawnArmorSparks(count: number): void {
+    for (let i = 0; i < count; i++) {
+      const color = i % 2 === 0 ? 0x00f0ff : 0xfcee0a;
+      const spark = new THREE.Mesh(
+        new THREE.BoxGeometry(0.06, 0.06, 0.14),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 }),
+      );
+      spark.position.set(
+        this.group.position.x + (Math.random() - 0.5) * 1.4,
+        this.group.position.y + 1.5 + Math.random() * 1.2,
+        this.group.position.z + (Math.random() - 0.5) * 1.1,
+      );
+      const velocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 4.5,
+        1.2 + Math.random() * 2.8,
+        (Math.random() - 0.5) * 4.5,
+      );
+      this.scene.add(spark);
+      this.sparks.push({ mesh: spark, velocity, life: 0.36 + Math.random() * 0.25, maxLife: 0.61 });
+    }
   }
 
   private spawnAfterimage(pos: THREE.Vector3): void {
@@ -373,9 +737,20 @@ export class RikhardSmasherBoss {
 
     if (this.state.phase === 'STAGGERED') {
       // Kneeling damaged animation awaiting Malorian execution!
-      this.group.position.y = this.arenaFloorY - 0.55;
-      this.group.rotation.x = 0.25;
-      this.visorMat.color.setHex(Math.sin(performance.now() * 0.025) > 0 ? 0xfcee0a : 0xff003c);
+      this.group.position.y = this.arenaFloorY - 0.58;
+      this.group.rotation.x = 0.28;
+      this.leftLegPivot.rotation.x = 0.72;
+      this.rightLegPivot.rotation.x = -0.35;
+      this.rightCannon.rotation.x = 0.45;
+      this.leftClaw.rotation.x = 0.55;
+      const pulseColor = Math.sin(performance.now() * 0.025) > 0 ? 0xfcee0a : 0xff003c;
+      this.coreMat.color.setHex(pulseColor);
+      this.coreMat.emissive.setHex(pulseColor);
+      this.sparkTimer -= dt;
+      if (this.sparkTimer <= 0) {
+        this.sparkTimer = 0.35;
+        this.spawnArmorSparks(3);
+      }
       this.updateEffects(dt, playerPos, physics, callbacks);
       return;
     }
@@ -386,7 +761,21 @@ export class RikhardSmasherBoss {
 
     const p2 = this.state.phase === 'PHASE_2';
     const p3 = this.state.phase === 'PHASE_3';
-    this.visorMat.color.setHex(p3 ? 0x00f0ff : 0xff003c);
+    const activeCoreHex = p3 ? 0x00f0ff : 0xff003c;
+    this.coreMat.color.setHex(activeCoreHex);
+    this.coreMat.emissive.setHex(activeCoreHex);
+    this.auraLight.color.setHex(p3 ? 0x00e5ff : 0xff1a48);
+    this.auraLight.intensity = p3 ? 11.5 : 8.5;
+
+    // Continuous armor sparks if weakened by Netrunner breach
+    if (this.state.armorWeakenedPercent > 0) {
+      this.sparkTimer -= dt;
+      if (this.sparkTimer <= 0) {
+        this.sparkTimer = 0.28 + Math.random() * 0.24;
+        this.spawnArmorSparks(2);
+      }
+      this.chestPlateMat.emissiveIntensity = 0.25 + Math.abs(Math.sin(performance.now() * 0.015)) * 0.55;
+    }
 
     if (this.flashTimer > 0) {
       this.flashTimer = Math.max(0, this.flashTimer - dt);
@@ -400,7 +789,7 @@ export class RikhardSmasherBoss {
     const dist = Math.hypot(dx, dz);
     this.group.rotation.y = Math.atan2(dx, dz);
 
-    // Relentless pursuit
+    // Relentless pursuit with heavy hydraulic stomp cycle
     const speed = p3 ? 6.4 : p2 ? 5.2 : 3.8;
     if (dist > 5.5) {
       const res = physics.resolveCylinderMove(
@@ -413,14 +802,27 @@ export class RikhardSmasherBoss {
       );
       this.group.position.x = res.x;
       this.group.position.z = res.z;
+      this.walkCycle += dt * speed * 1.45;
+      this.leftLegPivot.rotation.x = Math.sin(this.walkCycle) * 0.34;
+      this.rightLegPivot.rotation.x = -Math.sin(this.walkCycle) * 0.34;
+      this.leftClaw.rotation.x = -0.15 + Math.cos(this.walkCycle) * 0.24;
+    } else {
+      this.leftLegPivot.rotation.x *= 0.85;
+      this.rightLegPivot.rotation.x *= 0.85;
+      this.leftClaw.rotation.x = -0.45 + Math.sin(performance.now() * 0.008) * 0.18;
     }
+
+    // Spin rotary barrels when firing
+    this.rotaryBarrels.rotation.z += this.rotarySpinSpeed * dt;
+    this.rotarySpinSpeed = Math.max(0, this.rotarySpinSpeed - dt * 10);
 
     // 1. Autocannon bursts
     this.burstTimer -= dt;
     if (this.burstTimer <= 0) {
       this.burstTimer = p3 ? 0.55 : p2 ? 0.85 : 1.25;
+      this.rotarySpinSpeed = 24;
       callbacks.onAutocannonShot();
-      const start = this.group.position.clone().add(new THREE.Vector3(0, 2.0, 0));
+      const start = this.muzzleGlow.getWorldPosition(new THREE.Vector3());
       const dir = new THREE.Vector3(
         playerEye.x - start.x + (Math.random() - 0.5) * 0.8,
         playerEye.y - 0.2 - start.y,
@@ -456,7 +858,7 @@ export class RikhardSmasherBoss {
           new THREE.ConeGeometry(0.18, 0.7, 6),
           new THREE.MeshBasicMaterial({ color: 0xfcee0a }),
         );
-        const startPos = this.group.position.clone().add(new THREE.Vector3(0, 3.1, 0));
+        const startPos = this.group.position.clone().add(new THREE.Vector3(-0.9, 3.1, 0));
         missile.position.copy(startPos);
         this.scene.add(missile);
 
@@ -580,6 +982,18 @@ export class RikhardSmasherBoss {
       if (g.life <= 0) {
         this.scene.remove(g.mesh);
         this.ghosts.splice(i, 1);
+      }
+    }
+
+    for (let i = this.sparks.length - 1; i >= 0; i--) {
+      const s = this.sparks[i];
+      s.life -= dt;
+      s.velocity.y -= 9.8 * dt;
+      s.mesh.position.addScaledVector(s.velocity, dt);
+      (s.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, s.life / s.maxLife);
+      if (s.life <= 0) {
+        this.scene.remove(s.mesh);
+        this.sparks.splice(i, 1);
       }
     }
   }

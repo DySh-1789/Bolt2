@@ -173,6 +173,14 @@ export class PlayerController {
   private dashDir = new THREE.Vector3();
   private aimBlend = 0;
 
+  // Bolt-1-style interactive cinematic camera parameters
+  private cinematicAnchor = new THREE.Vector3();
+  private cinematicTarget = new THREE.Vector3();
+  private cinematicFov = 62;
+  private lookOffsetYaw = 0;
+  private lookOffsetPitch = 0;
+  private modeTime = 0;
+
   private camera: THREE.PerspectiveCamera;
   private baseFov = 75;
 
@@ -194,6 +202,8 @@ export class PlayerController {
     this.aimBlend = 0;
     this.shakeIntensity = 0;
     this.headBobPhase = 0;
+    this.lookOffsetYaw = 0;
+    this.lookOffsetPitch = 0;
     this.camera.fov = this.baseFov;
     this.camera.updateProjectionMatrix();
     this.syncCamera(0);
@@ -209,13 +219,29 @@ export class PlayerController {
 
   setMode(mode: CameraMode): void {
     this.mode = mode;
+    this.modeTime = 0;
+    this.lookOffsetYaw = 0;
+    this.lookOffsetPitch = 0;
     if (mode !== 'FREE') {
       this.aimBlend = 0;
     }
   }
 
+  /**
+   * Configures interactive first-person seated/execution/chair camera rig (like Bolt 1 Operating Table & Fallen modes).
+   */
+  configureInteractiveCutscene(anchor: Vec3, lookTarget: Vec3, fov = 58): void {
+    this.cinematicAnchor.set(anchor.x, anchor.y, anchor.z);
+    this.cinematicTarget.set(lookTarget.x, lookTarget.y, lookTarget.z);
+    this.cinematicFov = fov;
+    this.lookOffsetYaw = 0;
+    this.lookOffsetPitch = 0;
+    this.modeTime = 0;
+    this.applyInteractiveCutsceneCamera(0);
+  }
+
   addScreenShake(intensity: number): void {
-    this.shakeIntensity = Math.min(0.45, Math.max(this.shakeIntensity, intensity));
+    this.shakeIntensity = Math.min(0.55, Math.max(this.shakeIntensity, intensity));
   }
 
   addRecoilKick(pitchRad: number, yawRad: number): void {
@@ -262,14 +288,39 @@ export class PlayerController {
     let dashed = false;
     let jumped = false;
     let doubleJumped = false;
+    this.modeTime += dt;
+
+    // Interactive cutscene modes with Bolt-1-style subtle constrained head-look!
+    if (
+      this.mode === 'ROOFTOP_SIT' ||
+      this.mode === 'EXECUTION' ||
+      this.mode === 'HUYESHI_CHAIR' ||
+      this.mode === 'CHOKED' ||
+      this.mode === 'FALLEN'
+    ) {
+      const limitYaw = this.mode === 'ROOFTOP_SIT' ? 0.34 : this.mode === 'HUYESHI_CHAIR' ? 0.45 : 0.22;
+      const limitPitch = this.mode === 'HUYESHI_CHAIR' ? 0.38 : 0.2;
+      this.lookOffsetYaw = Math.max(
+        -limitYaw,
+        Math.min(limitYaw, this.lookOffsetYaw - input.mouseDeltaX * 0.45),
+      );
+      this.lookOffsetPitch = Math.max(
+        -limitPitch,
+        Math.min(limitPitch, this.lookOffsetPitch - input.mouseDeltaY * 0.45),
+      );
+      this.applyInteractiveCutsceneCamera(dt);
+      return { isMoving: false, dashed: false, jumped: false, doubleJumped: false };
+    }
 
     if (this.mode === 'FREE' || this.mode === 'CLOSET' || this.mode === 'CHASE_PASSENGER') {
       const aimSensScale = this.mode === 'FREE' ? THREE.MathUtils.lerp(1.0, 0.58, this.aimBlend) : 0.75;
-      this.yaw -= input.mouseDeltaX * aimSensScale;
-      this.pitch = Math.max(
-        this.mode === 'CLOSET' ? -0.45 : -1.42,
-        Math.min(this.mode === 'CLOSET' ? 0.45 : 1.42, this.pitch - input.mouseDeltaY * aimSensScale),
-      );
+      if (this.mode === 'CLOSET') {
+        this.yaw = Math.max(-Math.PI * 0.72, Math.min(-Math.PI * 0.16, this.yaw - input.mouseDeltaX * 0.5));
+        this.pitch = Math.max(-0.28, Math.min(0.28, this.pitch - input.mouseDeltaY * 0.5));
+      } else {
+        this.yaw -= input.mouseDeltaX * aimSensScale;
+        this.pitch = Math.max(-1.42, Math.min(1.42, this.pitch - input.mouseDeltaY * aimSensScale));
+      }
     }
 
     if (this.mode === 'FREE' && allowMovement) {
@@ -380,8 +431,53 @@ export class PlayerController {
     return { isMoving, dashed, jumped, doubleJumped };
   }
 
+  private applyInteractiveCutsceneCamera(dt: number): void {
+    if (this.shakeIntensity > 0) {
+      this.shakeIntensity = Math.max(0, this.shakeIntensity - dt * 1.4);
+    }
+    const sx = (Math.random() - 0.5) * this.shakeIntensity;
+    const sy = (Math.random() - 0.5) * this.shakeIntensity;
+
+    const breathe = Math.sin(this.modeTime * 1.7) * 0.025;
+    let extraRoll = 0;
+    let extraY = breathe;
+
+    if (this.mode === 'CHOKED') {
+      extraRoll = Math.sin(this.modeTime * 8.5) * 0.14;
+      extraY = 0.16 + Math.sin(this.modeTime * 11) * 0.04;
+    } else if (this.mode === 'FALLEN') {
+      extraRoll = 0.42 + Math.sin(this.modeTime * 0.9) * 0.04;
+      extraY = -Math.min(0.85, this.modeTime * 0.9);
+    } else if (this.mode === 'HUYESHI_CHAIR') {
+      extraRoll = Math.sin(this.modeTime * 0.6) * 0.03;
+    }
+
+    this.camera.position.set(
+      this.cinematicAnchor.x + sx,
+      this.cinematicAnchor.y + extraY + sy,
+      this.cinematicAnchor.z,
+    );
+
+    const lookDir = this.cinematicTarget.clone().sub(this.camera.position);
+    const baseYaw = Math.atan2(-lookDir.x, -lookDir.z);
+    const horiz = Math.hypot(lookDir.x, lookDir.z);
+    const basePitch = Math.atan2(lookDir.y, Math.max(0.01, horiz));
+
+    this.camera.rotation.set(
+      basePitch + this.lookOffsetPitch + sy * 0.25,
+      baseYaw + this.lookOffsetYaw + sx * 0.25,
+      extraRoll,
+      'YXZ',
+    );
+
+    if (Math.abs(this.camera.fov - this.cinematicFov) > 0.1) {
+      this.camera.fov += (this.cinematicFov - this.camera.fov) * Math.min(1, dt * 8 + 0.15);
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
   /**
-   * Positions camera during vehicle driving or cinematic scenes.
+   * Positions camera during vehicle driving or pure scripted pans.
    */
   setExternalCamera(pos: Vec3, lookAt: Vec3, fov = 76, roll = 0): void {
     this.camera.position.set(pos.x, pos.y, pos.z);
