@@ -397,7 +397,7 @@ export class StoryDirector {
     }
 
     // =========================================================================
-    // ACT 2: FLASHBACK HEIST (2 weeks ago — Rodion's 92nd-floor Penthouse)
+    // ACT 2: FLASHBACK HEIST (2 weeks ago — Rodion's 92nd-floor Penthouse 9201)
     // =========================================================================
     if (act === 'FLASHBACK_HEIST') {
       this.instances.setActiveInstance('PENTHOUSE');
@@ -407,6 +407,7 @@ export class StoryDirector {
       this.instances.penthouseSmasherProp.visible = false;
       this.instances.biochipCase.visible = true;
       this.instances.penthouseSanzhar.group.visible = true;
+      this.instances.setPenthouseSanzharState('room');
       this.chunks.forceRefresh(0, 0, false, this.physics);
       this.engine.setAtmosphere(0x080714, 0x110c1e, 0.0075);
       this.player.teleport(0, INSTANCE_Y.PENTHOUSE, 13, 0, 0);
@@ -415,13 +416,19 @@ export class StoryDirector {
       this.weapons.setVisible(true);
       this.hud.setCrosshairVisible(true);
       this.instances.setInteractableEnabled('heist_steal_biochip', true);
-      this.hud.showActBanner('2 НЕДЕЛИ НАЗАД // ПЕНТХАУС МАРАКУЛИН ТАУЭР', 5.0);
+      this.hud.showIntertitle(
+        '2 НЕДЕЛИ НАЗАД',
+        'ПЕНТХАУС МАРАКУЛИН ТАУЭР // НОМЕР РОДИОНА 9201',
+        'ФЛЭШБЕК // КИБЕР-АЛМАТЫ',
+        3.4,
+      );
+      this.hud.showActBanner('2 НЕДЕЛИ НАЗАД // ЛЮКС РОДИОНА 9201', 5.5);
       this.hud.setObjective('УКРАДИТЕ БИОЧИП ИЗ НОМЕРА РОДИОНА МАРАКУЛИНА [E]');
       this.audio.setMusicIntensity('ambient');
       this.queueLine(
         'sanzhar',
-        'Аи, мы в элитном номере Родиона Маракулина! Артём ждёт биочип — бери кейс на столе и уходим.',
-        5.0,
+        'Аи, мы в элитном номере 9201 Родиона Маракулина! Артём ждёт биочип — бери кейс на столе и валим.',
+        5.2,
         true,
       );
       this.setCheckpoint(act, 0, INSTANCE_Y.PENTHOUSE, 13, 0);
@@ -430,35 +437,37 @@ export class StoryDirector {
     }
 
     // =========================================================================
-    // ACT 3: FLASHBACK CHASE (Inside 3D Cyber-Akhmed cabin with Sanzhar!)
+    // ACT 3: FLASHBACK CHASE (Inside 3D Cyber-Akhmed cabin with Sanzhar — 2 fair waves!)
     // =========================================================================
     if (act === 'FLASHBACK_CHASE') {
       this.instances.setActiveInstance('CHASE');
       this.instances.setChaseSanzharWounded(false);
       this.instances.setChaseBiochipVisible(false);
       this.chunks.forceRefresh(0, 0, false, this.physics);
-      this.engine.setAtmosphere(0x050918, 0x0a1024, 0.0048);
+      this.engine.setAtmosphere(0x050918, 0x0a1024, 0.0045);
+      this.player.state.hp = this.player.state.maxHp;
+      this.player.state.armor = this.player.state.maxArmor;
       this.player.teleport(0, INSTANCE_Y.CHASE + 0.5, 4, 0, 0);
       this.player.setMode('CHASE_PASSENGER');
-      this.weapons.state.equip('alatau_pistol');
+      // Give Ai rapid-fire Steppe-9 SMG for a thrilling, fair chase!
+      this.weapons.state.unlockWeapon('steppe_smg', true);
       this.weapons.setVisible(true);
       this.hud.setCrosshairVisible(true);
       this.chaseWaveSpawned = false;
       this.chaseDronesRemaining = 4;
       this.hud.showActBanner('АКТ III // ПОГОНЯ В ТАКСИ «КИБЕР-АХМЕД»', 4.5);
-      this.hud.setObjective('ОТСТРЕЛИВАЙТЕСЬ ОТ КОРПО-ДРОНОВ ИЗ ОКНА ТАКСИ (4 ДРОНА)');
+      this.hud.setObjective('ОТСТРЕЛИВАЙТЕСЬ ОТ КОРПО-ДРОНОВ ИЗ ПП «СТЕПЬ-9» (ВОЛНА 1/2)');
       this.audio.setMusicIntensity('chase');
       this.queueLine(
         'akhmed',
-        'Кибер-Ахмед на связи! Врубаю боевой режим! Аи, сними дроны с хвоста, пока я вывожу нас на проспект Абая!',
+        'Кибер-Ахмед на связи! Броня такси держит удар! Аи, бери ПП из бардачка и сними дроны с хвоста!',
         5.0,
         true,
       );
+      // Wave 1: 2 drones right in front of the unobstructed windshield
       this.enemies.spawnWave([
-        { id: 'chase_d1', archetype: 'drone', zoneId: 'chase', x: -7, y: INSTANCE_Y.CHASE + 1.5, z: -18, hp: 55 },
-        { id: 'chase_d2', archetype: 'drone', zoneId: 'chase', x: 7, y: INSTANCE_Y.CHASE + 1.8, z: -22, hp: 55 },
-        { id: 'chase_d3', archetype: 'drone', zoneId: 'chase', x: -4, y: INSTANCE_Y.CHASE + 2.2, z: -28, hp: 55 },
-        { id: 'chase_d4', archetype: 'drone', zoneId: 'chase', x: 5, y: INSTANCE_Y.CHASE + 1.6, z: -32, hp: 55 },
+        { id: 'chase_d1', archetype: 'drone', zoneId: 'chase', x: -5.2, y: INSTANCE_Y.CHASE + 1.4, z: -16, hp: 38 },
+        { id: 'chase_d2', archetype: 'drone', zoneId: 'chase', x: 5.2, y: INSTANCE_Y.CHASE + 1.6, z: -19, hp: 38 },
       ]);
       this.chaseWaveSpawned = true;
       this.setCheckpoint(act, 0, INSTANCE_Y.CHASE + 0.5, 4, 0);
@@ -467,10 +476,11 @@ export class StoryDirector {
     }
 
     // =========================================================================
-    // ACT 4: TASTAK BETRAYAL (Artem's Motel with interactive choice & Mantis escape!)
+    // ACT 4: TASTAK BETRAYAL (Artem's Motel Room 204 with visible Bodyguard!)
     // =========================================================================
     if (act === 'TASTAK_BETRAYAL') {
       this.instances.setActiveInstance('NONE');
+      this.city.setMotelBodyguardChokePose(false);
       this.city.setStoryProps({
         samirRooftop: false,
         samirJunkyard: false,
@@ -487,8 +497,8 @@ export class StoryDirector {
       this.weapons.setVisible(true);
       this.hud.setCrosshairVisible(true);
       this.city.setInteractableEnabled('motel_sink', false);
-      this.hud.showActBanner('АКТ IV // МОТЕЛЬ НА КИБЕР-ТАСТАКЕ', 4.5);
-      this.hud.setObjective('ПОГОВОРИТЕ С АРТЁМОМ В МОТЕЛЕ');
+      this.hud.showActBanner('АКТ IV // МОТЕЛЬ «ТАСТАК» — НОМЕР 204', 4.5);
+      this.hud.setObjective('ПОГОВОРИТЕ С АРТЁМОМ В НОМЕРЕ 204');
       this.audio.setMusicIntensity('ambient');
       this.queueLine(
         'artem',
@@ -612,6 +622,12 @@ export class StoryDirector {
       this.instances.setTowerSecurityHacked(preHacked);
       this.instances.setInteractableEnabled('tower_hack_security', !preHacked);
 
+      this.hud.showIntertitle(
+        'НАСТОЯЩЕЕ ВРЕМЯ',
+        'ШТУРМ МАРАКУЛИН ТАУЭР // ГЛАВНЫЙ ХОЛЛ',
+        'ПОРА РАЗВЛЕЧЬСЯ КАК В 2026',
+        3.0,
+      );
       this.hud.showActBanner(
         approach === 'netrunner'
           ? 'АКТ VII // ШТУРМ МАРАКУЛИН ТАУЭР (НЕТРАННЕР)'
@@ -757,6 +773,12 @@ export class StoryDirector {
       this.hud.setCrosshairVisible(false);
       this.hud.setCombatHudVisible(false);
       this.targetLetterbox = 0.68;
+      this.hud.showIntertitle(
+        'СПУСТЯ 2 МЕСЯЦА',
+        'АНТИКАФЕ «МАРУМ» // ЛЕГЕНДА ЕБЛАНХАНЫ',
+        'ЭПИЛОГ I // КИБЕР-АЛМАТЫ',
+        3.2,
+      );
       this.hud.showActBanner('ЭПИЛОГ I // ЛЕГЕНДА ЕБЛАНХАНЫ — АНТИКАФЕ «МАРУМ»', 5.5);
       this.audio.setMusicIntensity('marum_lounge');
       this.queueLine(
@@ -787,6 +809,12 @@ export class StoryDirector {
       this.hud.setCrosshairVisible(false);
       this.hud.setCombatHudVisible(false);
       this.targetLetterbox = 0.72;
+      this.hud.showIntertitle(
+        'ДОРОГА В ТАЛДЫКОРГАН',
+        'САМИР В ТЕЛЕ АИ // ГОРОД-АД',
+        'ЭПИЛОГ II // ПРОЩАЙ, АЛМАТЫ',
+        3.2,
+      );
       this.hud.showActBanner('ЭПИЛОГ II // ДОРОГА В ГОРОД-АД ТАЛДЫКОРГАН', 5.5);
       this.audio.setMusicIntensity('taldykorgan');
       const farewell = getCyberspaceFarewellLines('taldykorgan', this.stats.samirAffinity, this.censoredDialogue);
@@ -1176,16 +1204,18 @@ export class StoryDirector {
         this.instances.setInteractableEnabled('heist_steal_biochip', false);
         this.instances.biochipCase.visible = false;
         this.audio.playTerminalHack();
+        this.instances.setPenthouseSanzharState('approaching_closet');
         this.instances.setInteractableEnabled('heist_hide_closet', true);
-        this.hud.setObjective('РОДИОН ЗАХОДИТ! СПРЯЧЬТЕСЬ В ШКАФ СЛЕВА [E]');
-        this.queueLine('sanzhar', 'Твою мать, Родион вернулся раньше! Быстро в шкаф слева, Аи!', 4.5, true);
+        this.hud.setObjective('РОДИОН ЗАХОДИТ! СПРЯЧЬТЕСЬ В ШКАФ СЛЕВА С САНЖАРОМ [E]');
+        this.queueLine('sanzhar', 'Твою мать, Родион вернулся раньше! Я уже у шкафа слева — залезай внутрь, Аи!', 4.5, true);
         this.stateMachine.subStep = 1;
         break;
       }
       case 'heist_hide_closet': {
         this.instances.setInteractableEnabled('heist_hide_closet', false);
-        // Position directly inside the 3D slatted closet peering out through the wooden louver blinds!
-        this.player.teleport(-10.1, INSTANCE_Y.PENTHOUSE, 7, -Math.PI * 0.44, -0.02);
+        // BOTH Ai and Sanzhar climb right inside the 2-person 3D slatted closet!
+        this.instances.setPenthouseSanzharState('inside_closet');
+        this.player.teleport(-10.1, INSTANCE_Y.PENTHOUSE, 6.7, -Math.PI * 0.44, -0.02);
         this.player.setMode('CLOSET');
         this.weapons.setVisible(false);
         this.hud.setCrosshairVisible(false);
@@ -1203,25 +1233,28 @@ export class StoryDirector {
       }
       case 'heist_elevator_btn': {
         this.instances.setInteractableEnabled('heist_elevator_btn', false);
+        // Guide player cleanly inside the elevator cabin center so moving doors never clip
+        this.player.teleport(0, INSTANCE_Y.PENTHOUSE, -38.0, Math.PI, 0);
         this.audio.playElevatorDing();
         this.audio.playElevatorRide(3.4);
         this.instances.penthouseElevator.state.startRide();
-        this.hud.setObjective('СПУСК В ГАРАЖ К ТАКСИ «КИБЕР-АХМЕД»');
+        this.hud.setObjective('СПУСК НА ЛИФТЕ В ГАРАЖ К ТАКСИ «КИБЕР-АХМЕД»');
         break;
       }
       case 'motel_sink': {
         this.city.setInteractableEnabled('motel_sink', false);
-        this.city.setStoryProps({ motelArtem: false, motelBodyguard: false });
-        // Bolt-1-style choke struggle cutscene until player pops Mantis Blades with LMB / F!
+        // KEEP BOTH Bodyguard & Artem visible! Position Bodyguard right in front of Ai's face choking him!
+        this.city.setStoryProps({ motelArtem: true, motelBodyguard: true });
+        this.city.setMotelBodyguardChokePose(true);
         this.stateMachine.subStep = 2;
         this.stateMachine.actTimer = 0;
         this.chokeBeatTimer = 0.1;
         this.fx.damageVignette = 0.85;
         this.player.setMode('CHOKED');
         this.player.configureInteractiveCutscene(
-          { x: -171.2, y: 1.72, z: -172.2 },
-          { x: -168.5, y: 1.88, z: -169.5 },
-          68,
+          { x: -171.65, y: 1.58, z: -172.7 },
+          { x: -170.2, y: 1.76, z: -171.6 },
+          60,
         );
         this.weapons.state.equip('mantis_blades');
         this.weapons.setVisible(true);
@@ -1246,7 +1279,7 @@ export class StoryDirector {
         this.enemies.clearZone('tower_lobby'); // Hack fries remaining lobby drones/turrets & clears hack path!
         this.queueLine(
           'system',
-          'УЗЕЛ БЕЗОПАСНОСТИ ВЗЛОМАН! Защита холла отключена, броня Рихарда Смэшера ослаблена на 20%!',
+          'УЗЕЛ БЕЗОПАСНОСТИ ВЗЛОМАН! Защита холла отключена, броня Рихарда Смэшера ослабленa на 20%!',
           4.8,
           true,
         );
@@ -1254,6 +1287,8 @@ export class StoryDirector {
       }
       case 'tower_elevator_down': {
         this.instances.setInteractableEnabled('tower_elevator_down', false);
+        // Step cleanly inside pass-through cabin facing North (exit door opens straight into Boss Arena!)
+        this.player.teleport(0, INSTANCE_Y.UNDERGROUND + 24, -30.5, 0, 0);
         this.audio.playElevatorDing();
         this.audio.playElevatorRide(3.6);
         this.instances.undergroundElevator.state.startRide();
@@ -1314,9 +1349,11 @@ export class StoryDirector {
     if (this.stateMachine.act === 'TASTAK_BETRAYAL' && this.stateMachine.subStep === 2) {
       if (input.firePressed || input.meleePressed) {
         this.stateMachine.subStep = 3;
+        this.city.setMotelBodyguardChokePose(false);
+        this.city.setStoryProps({ motelArtem: false, motelBodyguard: false });
         this.hud.setRelicWarning(false);
         this.player.setMode('FREE');
-        this.player.teleport(-171, 0.25, -171, -Math.PI * 0.75, 0);
+        this.player.teleport(-170.8, 0.25, -170.4, -Math.PI * 0.68, 0);
         this.weapons.state.equip('mantis_blades');
         this.weapons.triggerMantisSlashVisual(2);
         this.audio.playMantisSlash(true);
@@ -1325,8 +1362,8 @@ export class StoryDirector {
         this.hud.setObjective('УБЕЙТЕ ТЕЛОХРАНИТЕЛЯ И АРТЁМА КЛИНКАМИ БОГОМОЛА!');
         this.queueLine('ai', 'Отвали от меня! *ВЫДВИГАЕТ КЛИНКИ БОГОМОЛА*', 3.2, true);
         this.enemies.spawnWave([
-          { id: 'motel_bg', archetype: 'bodyguard', zoneId: 'motel', x: -168, y: 0.25, z: -169, hp: 95 },
-          { id: 'motel_artem', archetype: 'artem', zoneId: 'motel', x: -161, y: 0.25, z: -161, hp: 130 },
+          { id: 'motel_bg', archetype: 'bodyguard', zoneId: 'motel', x: -166.0, y: 0.25, z: -169.8, hp: 90 },
+          { id: 'motel_artem', archetype: 'artem', zoneId: 'motel', x: -160.2, y: 0.25, z: -167.2, hp: 120 },
         ]);
       }
       return;
@@ -1535,7 +1572,9 @@ export class StoryDirector {
   }
 
   private handlePlayerDamaged(amount: number, shake = 0.1): void {
-    const allowLethal = this.stateMachine.act !== 'TASTAK_BETRAYAL';
+    // Cyber-Akhmed's armored chassis and motel betrayal sequence prevent unfair mid-cutscene softlocks
+    const allowLethal =
+      this.stateMachine.act !== 'TASTAK_BETRAYAL' && this.stateMachine.act !== 'FLASHBACK_CHASE';
     const res = this.player.state.takeDamage(amount, allowLethal);
     if (res.applied > 0) {
       this.fx.damageVignette = Math.min(1, this.fx.damageVignette + 0.55);
@@ -1585,6 +1624,7 @@ export class StoryDirector {
         if (this.stateMachine.actTimer > 8.6) {
           this.instances.penthouseRodion.group.visible = false;
           this.instances.penthouseSmasherProp.visible = false;
+          this.instances.setPenthouseSanzharState('corridor');
           this.targetLetterbox = 0;
           this.hud.setCombatHudVisible(true);
           this.hud.setCrosshairVisible(true);
@@ -1593,7 +1633,7 @@ export class StoryDirector {
           this.weapons.setVisible(true);
           this.stateMachine.subStep = 3;
           this.audio.setMusicIntensity('combat');
-          this.hud.setObjective('ПРОРВИТЕСЬ С БОЕМ К ЛИФТУ В ГАРАЖ КИБЕР-АХМЕДА');
+          this.hud.setObjective('ПРОРВИТЕСЬ С БОЕМ ПО ГОСТИНИЧНОМУ КОРИДОРУ К ЛИФТУ');
           this.queueLine(
             'sanzhar',
             'Он реально задушил собственного отца! Охуев от этого дерьма, прорываемся к лифту!',
@@ -1624,10 +1664,24 @@ export class StoryDirector {
       return;
     }
 
-    // 3. FLASHBACK CHASE (Inside Cyber-Akhmed Cabin + Dying Sanzhar Biochip Insertion!)
+    // 3. FLASHBACK CHASE (Inside Cyber-Akhmed Cabin — 2 fair waves + Dying Sanzhar Biochip Insertion!)
     if (act === 'FLASHBACK_CHASE') {
       this.fx.speedLines = 0.52;
       if (this.chaseWaveSpawned && this.enemies.getAliveCount('chase') === 0 && this.stateMachine.subStep === 0) {
+        // Spawn Wave 2 (2 more drones) before escaping!
+        this.stateMachine.subStep = 10;
+        this.hud.setObjective('ОТСТРЕЛИВАЙТЕСЬ ОТ КОРПО-ДРОНОВ (ВОЛНА 2/2 — ПОСЛЕДНИЕ 2 ДРОНА)');
+        this.queueLine(
+          'akhmed',
+          'Отлично сработал, брат! Остались ещё два дрона — сними их, и мы уходим в отрыв!',
+          4.0,
+          true,
+        );
+        this.enemies.spawnWave([
+          { id: 'chase_d3', archetype: 'drone', zoneId: 'chase', x: -4.6, y: INSTANCE_Y.CHASE + 1.8, z: -17, hp: 38 },
+          { id: 'chase_d4', archetype: 'drone', zoneId: 'chase', x: 4.8, y: INSTANCE_Y.CHASE + 1.5, z: -21, hp: 38 },
+        ]);
+      } else if (this.stateMachine.subStep === 10 && this.enemies.getAliveCount('chase') === 0) {
         this.stateMachine.subStep = 1;
         this.stateMachine.actTimer = 0;
         this.instances.setChaseSanzharWounded(true);
@@ -2036,10 +2090,11 @@ export class StoryDirector {
     this.handleCombatInput(input);
     this.weapons.update(dt, moveRes.isMoving, this.player.getAimBlend());
 
-    // Enemies AI
+    // Enemies AI (Cyber-Akhmed armored hull reduces chase drone damage by 65%)
     this.enemies.update(worldDt, this.player.position, this.player.getEyePosition(), this.physics, {
       onEnemyShot: (heavy) => this.audio.playEnemyShot(heavy),
       onPlayerHit: (dmg) => this.handlePlayerDamaged(dmg, 0.1),
+      damageScale: this.stateMachine.act === 'FLASHBACK_CHASE' ? 0.35 : 1.0,
     });
 
     // Story & world tick (pass player.position for 3D Cyber-Rain!)

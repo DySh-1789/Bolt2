@@ -76,6 +76,21 @@ export class PhysicsWorld {
     }
   }
 
+  updateColliderBounds(
+    id: string,
+    bounds: Partial<Pick<AABB, 'minX' | 'maxX' | 'minY' | 'maxY' | 'minZ' | 'maxZ' | 'active'>>,
+  ): void {
+    const box = this.byId.get(id);
+    if (!box) return;
+    if (bounds.minX !== undefined) box.minX = bounds.minX;
+    if (bounds.maxX !== undefined) box.maxX = bounds.maxX;
+    if (bounds.minY !== undefined) box.minY = bounds.minY;
+    if (bounds.maxY !== undefined) box.maxY = bounds.maxY;
+    if (bounds.minZ !== undefined) box.minZ = bounds.minZ;
+    if (bounds.maxZ !== undefined) box.maxZ = bounds.maxZ;
+    if (bounds.active !== undefined) box.active = bounds.active;
+  }
+
   setChunkFiltering(enabled: boolean): void {
     this.chunkFilteringEnabled = enabled;
   }
@@ -143,11 +158,31 @@ export class PhysicsWorld {
     feetY: number,
     height: number,
   ): { x: number; z: number; collided: boolean } {
+    if (
+      !Number.isFinite(current.x) ||
+      !Number.isFinite(current.z) ||
+      !Number.isFinite(targetX) ||
+      !Number.isFinite(targetZ) ||
+      !Number.isFinite(radius) ||
+      !Number.isFinite(feetY) ||
+      !Number.isFinite(height)
+    ) {
+      return {
+        x: Number.isFinite(current.x) ? current.x : 0,
+        z: Number.isFinite(current.z) ? current.z : 0,
+        collided: false,
+      };
+    }
+
     const totalDx = targetX - current.x;
     const totalDz = targetZ - current.z;
     const totalDist = Math.hypot(totalDx, totalDz);
+    if (!Number.isFinite(totalDist)) {
+      return { x: current.x, z: current.z, collided: false };
+    }
+
     const maxStep = Math.max(0.25, radius * 0.55);
-    const steps = Math.max(1, Math.ceil(totalDist / maxStep));
+    const steps = Math.min(24, Math.max(1, Math.ceil(totalDist / maxStep)));
 
     let curX = current.x;
     let curZ = current.z;

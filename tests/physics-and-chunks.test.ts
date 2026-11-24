@@ -73,4 +73,20 @@ describe('PhysicsWorld with Chunk Filtering & Vehicle Collisions', () => {
     expect(physics.hasLineOfSight({ x: 0, y: 1.5, z: 0 }, { x: 0, y: 1.5, z: -20 })).toBe(false);
     expect(physics.hasLineOfSight({ x: 5, y: 1.5, z: 0 }, { x: 5, y: 1.5, z: -20 })).toBe(true);
   });
+
+  it('guards resolveCylinderMove against NaN and updates moving elevator door bounds', () => {
+    const physics = new PhysicsWorld();
+    const safe = physics.resolveCylinderMove({ x: 1, y: 0, z: 2 }, Number.NaN, 5, 0.45, 0, 1.8);
+    expect(safe).toEqual({ x: 1, z: 2, collided: false });
+
+    physics.addBox('elev_door', 0, 121.8, -35.8, 4.4, 3.6, 0.5, { active: true });
+    physics.updateColliderBounds('elev_door', { minY: 96, maxY: 99.6, active: true });
+    const box = physics.getCollider('elev_door');
+    expect(box?.minY).toBe(96);
+    expect(box?.maxY).toBe(99.6);
+
+    // Blocks player at new bottom elevator floor Y=96
+    const blocked = physics.resolveCylinderMove({ x: 0, y: 96, z: -37.2 }, 0, -35.0, 0.45, 96, 1.8);
+    expect(blocked.collided).toBe(true);
+  });
 });

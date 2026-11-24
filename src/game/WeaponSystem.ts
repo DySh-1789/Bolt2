@@ -328,10 +328,10 @@ export class WeaponSystem {
       this.gunPivot.add(this.weaponMeshes[id]);
     }
 
-    // Muzzle flash
+    // Muzzle flash light mounted directly on camera so toggling viewModel.visible never recompiles shaders
     this.muzzleLight = new THREE.PointLight(0xffaa33, 0, 7);
-    this.muzzleLight.position.set(0, 0.05, -0.48);
-    this.gunPivot.add(this.muzzleLight);
+    this.muzzleLight.position.set(0.22, -0.15, -0.92);
+    this.camera.add(this.muzzleLight);
 
     this.muzzleFlashMesh = new THREE.Mesh(
       new THREE.OctahedronGeometry(0.085, 0),

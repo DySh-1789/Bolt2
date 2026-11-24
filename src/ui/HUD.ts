@@ -49,6 +49,11 @@ const CHAPTER_LIST: Array<{ act: GameAct; label: string }> = [
 export class HUD {
   private callbacks: HudCallbacks;
 
+  private intertitleOverlay = document.getElementById('intertitle-overlay')!;
+  private intertitleTag = document.getElementById('intertitle-tag')!;
+  private intertitleTitle = document.getElementById('intertitle-title')!;
+  private intertitleSub = document.getElementById('intertitle-sub')!;
+
   private hudLayer = document.getElementById('hud-layer')!;
   private titleScreen = document.getElementById('title-screen')!;
   private mapScreen = document.getElementById('map-screen')!;
@@ -90,6 +95,7 @@ export class HUD {
   private relicWarning = document.getElementById('relic-warning')!;
 
   private vehicleHud = document.getElementById('vehicle-hud')!;
+  private vehTitle = this.vehicleHud.querySelector('.veh-title') as HTMLElement | null;
   private vehSpeedVal = document.getElementById('veh-speed-val')!;
   private vehNitroFill = document.getElementById('veh-nitro-fill')!;
 
@@ -124,6 +130,28 @@ export class HUD {
   private hitmarkerTimer = 0;
   private subtitleTimer = 0;
   private actBannerTimer = 0;
+  private intertitleTimer = 0;
+
+  // Zero-thrash dirty-checking caches
+  private lastWeaponSlotsKey = '';
+  private lastVitalsKey = '';
+  private lastChunkKey = '';
+  private lastPromptLabel: string | null = null;
+  private lastVehicleKey = '0';
+  private lastObjectiveText = '';
+  private lastDistrictKey = '';
+  private lastSamirSync = -1;
+  private lastCrosshairVisible = true;
+  private lastRelicKey = '0';
+  private lastBossKey = '0';
+  private lastHuyeshiKey = '0';
+
+  // Minimap throttling (~16.7 FPS)
+  private static readonly MINIMAP_INTERVAL_SEC = 0.06;
+  private minimapAccum = HUD.MINIMAP_INTERVAL_SEC;
+  private lastMinimapOpenWorld: boolean | null = null;
+  private lastMinimapX = Number.NaN;
+  private lastMinimapZ = Number.NaN;
 
   constructor(callbacks: HudCallbacks) {
     this.callbacks = callbacks;
@@ -185,9 +213,29 @@ export class HUD {
     this.mapScreen.classList.toggle('hidden', screen !== 'MAP');
     this.ripperScreen.classList.toggle('hidden', screen !== 'RIPPERDOC');
     this.creditsScreen.classList.toggle('hidden', screen !== 'CREDITS');
+    if (screen === 'TITLE') {
+      this.hideIntertitle();
+    }
+  }
+
+  showIntertitle(title: string, subtitle = '', tag = '', durationSec = 3.2): void {
+    this.intertitleTag.textContent = tag;
+    this.intertitleTitle.textContent = title;
+    this.intertitleSub.textContent = subtitle;
+    this.intertitleOverlay.classList.add('visible');
+    this.intertitleOverlay.setAttribute('aria-hidden', 'false');
+    this.intertitleTimer = durationSec;
+  }
+
+  hideIntertitle(): void {
+    this.intertitleTimer = 0;
+    this.intertitleOverlay.classList.remove('visible');
+    this.intertitleOverlay.setAttribute('aria-hidden', 'true');
   }
 
   setObjective(text: string): void {
+    if (text === this.lastObjectiveText) return;
+    this.lastObjectiveText = text;
     this.objectiveText.textContent = text;
   }
 
@@ -198,11 +246,19 @@ export class HUD {
   }
 
   setDistrict(name: string, subtitle: string): void {
+    const key = `${name}|${subtitle}`;
+    if (key === this.lastDistrictKey) return;
+    this.lastDistrictKey = key;
     this.districtName.textContent = name;
     this.districtSub.textContent = subtitle;
   }
 
   setChunkStats(stats: ChunkStats, inOpenWorld: boolean): void {
+    const key = inOpenWorld
+      ? `${stats.currentCx},${stats.currentCz},${stats.visibleChunks},${stats.totalChunks}`
+      : 'INSTANCE';
+    if (key === this.lastChunkKey) return;
+    this.lastChunkKey = key;
     this.chunkBadge.textContent = inOpenWorld
       ? `ЧАНК ${stats.currentCx},${stats.currentCz} • ${stats.visibleChunks}/${stats.totalChunks}`
       : 'ИНСТАНС // ЗАКРЫТАЯ ЗОНА';
@@ -226,17 +282,28 @@ export class HUD {
   }
 
   setSamirSync(percent: number): void {
-    this.syncVal.textContent = `${Math.round(percent)}%`;
+    const rounded = Math.round(percent);
+    if (rounded === this.lastSamirSync) return;
+    this.lastSamirSync = rounded;
+    this.syncVal.textContent = `${rounded}%`;
   }
 
   setHuyeshiProgress(visible: boolean, ratio = 0, label = 'ХУЕШИ // РАЗДЕЛЕНИЕ СОЗНАНИЯ'): void {
-    this.huyeshiBar.classList.toggle('hidden', !visible);
-    if (visible) {
-      const clamped = Math.max(0, Math.min(1, ratio));
-      this.huyeshiLabel.textContent = label;
-      this.huyeshiPct.textContent = `${Math.round(clamped * 100)}%`;
-      this.huyeshiFill.style.width = `${clamped * 100}%`;
+    if (!visible) {
+      if (this.lastHuyeshiKey === '0') return;
+      this.lastHuyeshiKey = '0';
+      this.huyeshiBar.classList.add('hidden');
+      return;
     }
+    const clamped = Math.max(0, Math.min(1, ratio));
+    const pctStr = (clamped * 100).toFixed(1);
+    const key = `1|${pctStr}|${label}`;
+    if (key === this.lastHuyeshiKey) return;
+    this.lastHuyeshiKey = key;
+    this.huyeshiBar.classList.remove('hidden');
+    this.huyeshiLabel.textContent = label;
+    this.huyeshiPct.textContent = `${Math.round(clamped * 100)}%`;
+    this.huyeshiFill.style.width = `${pctStr}%`;
   }
 
   showChoices(title: string, choices: DialogueChoice[]): void {
@@ -260,6 +327,8 @@ export class HUD {
   }
 
   setInteractPrompt(label: string | null): void {
+    if (label === this.lastPromptLabel) return;
+    this.lastPromptLabel = label;
     if (label) {
       this.interactPrompt.textContent = label;
       this.interactPrompt.classList.remove('hidden');
@@ -269,11 +338,20 @@ export class HUD {
   }
 
   setRelicWarning(visible: boolean, text = 'СБОЙ БИОЧИПА // КОНСТРУКТ: САМИР'): void {
-    this.relicWarning.textContent = text;
-    this.relicWarning.classList.toggle('hidden', !visible);
+    const key = visible ? `1|${text}` : '0';
+    if (key === this.lastRelicKey) return;
+    this.lastRelicKey = key;
+    if (visible) {
+      this.relicWarning.textContent = text;
+      this.relicWarning.classList.remove('hidden');
+    } else {
+      this.relicWarning.classList.add('hidden');
+    }
   }
 
   setCrosshairVisible(visible: boolean): void {
+    if (visible === this.lastCrosshairVisible) return;
+    this.lastCrosshairVisible = visible;
     this.crosshair.classList.toggle('hidden', !visible);
   }
 
@@ -284,54 +362,92 @@ export class HUD {
   }
 
   setBossBar(visible: boolean, name = '', phaseLabel = '', ratio = 1): void {
-    this.bossBar.classList.toggle('hidden', !visible);
-    if (visible) {
-      this.bossName.textContent = name;
-      this.bossPhase.textContent = phaseLabel;
-      this.bossFill.style.width = `${Math.max(0, Math.min(100, ratio * 100))}%`;
+    if (!visible) {
+      if (this.lastBossKey === '0') return;
+      this.lastBossKey = '0';
+      this.bossBar.classList.add('hidden');
+      return;
     }
+    const pctStr = Math.max(0, Math.min(100, ratio * 100)).toFixed(1);
+    const key = `1|${name}|${phaseLabel}|${pctStr}`;
+    if (key === this.lastBossKey) return;
+    this.lastBossKey = key;
+    this.bossBar.classList.remove('hidden');
+    this.bossName.textContent = name;
+    this.bossPhase.textContent = phaseLabel;
+    this.bossFill.style.width = `${pctStr}%`;
   }
 
   updateVitals(player: PlayerState, arsenal: ArsenalState): void {
-    this.hpFill.style.width = `${(player.hp / player.maxHp) * 100}%`;
-    this.hpVal.textContent = `${Math.ceil(player.hp)}`;
-    this.armorFill.style.width = `${(player.armor / player.maxArmor) * 100}%`;
-    this.armorVal.textContent = `${Math.ceil(player.armor)}`;
-    this.sandyFill.style.width = `${player.sandevistanEnergy}%`;
-    this.sandyVal.textContent = `${Math.round(player.sandevistanEnergy)}%`;
-    this.maxDocVal.textContent = `${player.maxDocCharges}`;
-    this.tengeVal.textContent = `${player.tenge}`;
-    this.credVal.textContent = `${player.streetCred}`;
+    const hpPct = player.maxHp > 0 ? Math.max(0, Math.min(100, (player.hp / player.maxHp) * 100)) : 0;
+    const hpPctStr = hpPct.toFixed(1);
+    const hpNum = Math.ceil(player.hp);
+    const armorPct = player.maxArmor > 0 ? Math.max(0, Math.min(100, (player.armor / player.maxArmor) * 100)) : 0;
+    const armorPctStr = armorPct.toFixed(1);
+    const armorNum = Math.ceil(player.armor);
+    const sandyPct = Math.max(0, Math.min(100, player.sandevistanEnergy));
+    const sandyPctStr = sandyPct.toFixed(1);
+    const sandyNum = Math.round(sandyPct);
 
     const spec = arsenal.getSpec();
-    this.weaponName.textContent = spec.name;
-    if (spec.isMelee) {
-      this.ammoDisplay.textContent = '∞ КЛИНКИ';
-    } else if (arsenal.reloading) {
-      this.ammoDisplay.textContent = 'ПЕРЕЗАРЯДКА...';
-    } else {
-      this.ammoDisplay.textContent = `${arsenal.getAmmo()} / ${spec.magSize}`;
+    const ammoText = spec.isMelee
+      ? '∞ КЛИНКИ'
+      : arsenal.reloading
+        ? 'ПЕРЕЗАРЯДКА...'
+        : `${arsenal.getAmmo()} / ${spec.magSize}`;
+
+    const vitalsKey = `${hpPctStr}|${hpNum}|${armorPctStr}|${armorNum}|${sandyPctStr}|${sandyNum}|${player.maxDocCharges}|${player.tenge}|${player.streetCred}|${spec.name}|${ammoText}`;
+    if (vitalsKey !== this.lastVitalsKey) {
+      this.lastVitalsKey = vitalsKey;
+      this.hpFill.style.width = `${hpPctStr}%`;
+      this.hpVal.textContent = `${hpNum}`;
+      this.armorFill.style.width = `${armorPctStr}%`;
+      this.armorVal.textContent = `${armorNum}`;
+      this.sandyFill.style.width = `${sandyPctStr}%`;
+      this.sandyVal.textContent = `${sandyNum}%`;
+      this.maxDocVal.textContent = `${player.maxDocCharges}`;
+      this.tengeVal.textContent = `${player.tenge}`;
+      this.credVal.textContent = `${player.streetCred}`;
+      this.weaponName.textContent = spec.name;
+      this.ammoDisplay.textContent = ammoText;
     }
 
-    this.weaponSlots.innerHTML = WEAPON_ORDER.map((id) => {
-      const s = WEAPON_SPECS[id];
-      const owned = arsenal.unlocked.has(id);
-      const active = arsenal.activeWeapon === id;
-      return `<span class="wpn-slot ${owned ? 'owned' : ''} ${active ? 'active' : ''}">${s.slot}:${s.shortName}</span>`;
-    }).join('');
+    let unlockedMask = 0;
+    for (let i = 0; i < WEAPON_ORDER.length; i++) {
+      if (arsenal.unlocked.has(WEAPON_ORDER[i])) {
+        unlockedMask |= 1 << i;
+      }
+    }
+    const slotsKey = `${arsenal.activeWeapon}|${unlockedMask}`;
+    if (slotsKey !== this.lastWeaponSlotsKey) {
+      this.lastWeaponSlotsKey = slotsKey;
+      this.weaponSlots.innerHTML = WEAPON_ORDER.map((id) => {
+        const s = WEAPON_SPECS[id];
+        const owned = arsenal.unlocked.has(id);
+        const active = arsenal.activeWeapon === id;
+        return `<span class="wpn-slot ${owned ? 'owned' : ''} ${active ? 'active' : ''}">${s.slot}:${s.shortName}</span>`;
+      }).join('');
+    }
   }
 
   updateVehicleHud(inCar: boolean, speedKmh: number, nitro: number, autopilot: boolean): void {
-    this.vehicleHud.classList.toggle('hidden', !inCar);
-    if (inCar) {
-      this.vehSpeedVal.textContent = `${speedKmh}`;
-      this.vehNitroFill.style.width = `${Math.max(0, Math.min(100, nitro))}%`;
-      const title = this.vehicleHud.querySelector('.veh-title');
-      if (title) {
-        title.textContent = autopilot
-          ? 'КИБЕР-АХМЕД AI // АВТОПИЛОТ АКТИВЕН'
-          : 'КИБЕР-АХМЕД AI // РУЧНОЕ УПРАВЛЕНИЕ';
-      }
+    if (!inCar) {
+      if (this.lastVehicleKey === '0') return;
+      this.lastVehicleKey = '0';
+      this.vehicleHud.classList.add('hidden');
+      return;
+    }
+    const nitroClamped = Math.max(0, Math.min(100, nitro)).toFixed(1);
+    const key = `1|${speedKmh}|${nitroClamped}|${autopilot ? 1 : 0}`;
+    if (key === this.lastVehicleKey) return;
+    this.lastVehicleKey = key;
+    this.vehicleHud.classList.remove('hidden');
+    this.vehSpeedVal.textContent = `${speedKmh}`;
+    this.vehNitroFill.style.width = `${nitroClamped}%`;
+    if (this.vehTitle) {
+      this.vehTitle.textContent = autopilot
+        ? 'КИБЕР-АХМЕД AI // АВТОПИЛОТ АКТИВЕН'
+        : 'КИБЕР-АХМЕД AI // РУЧНОЕ УПРАВЛЕНИЕ';
     }
   }
 
@@ -391,6 +507,24 @@ export class HUD {
     buildings: CityBlockRect[],
     inOpenWorld: boolean,
   ): void {
+    const modeChanged = this.lastMinimapOpenWorld !== inOpenWorld;
+    if (!inOpenWorld && !modeChanged) {
+      return;
+    }
+
+    const dx = playerPos.x - this.lastMinimapX;
+    const dz = playerPos.z - this.lastMinimapZ;
+    const teleported = Number.isNaN(dx) || dx * dx + dz * dz > 25;
+
+    if (!modeChanged && !teleported && this.minimapAccum < HUD.MINIMAP_INTERVAL_SEC) {
+      return;
+    }
+
+    this.minimapAccum = 0;
+    this.lastMinimapOpenWorld = inOpenWorld;
+    this.lastMinimapX = playerPos.x;
+    this.lastMinimapZ = playerPos.z;
+
     const ctx = this.minimapCtx;
     const w = this.minimapCanvas.width;
     const h = this.minimapCanvas.height;
@@ -623,6 +757,8 @@ export class HUD {
   }
 
   update(dt: number): void {
+    this.minimapAccum = Math.min(this.minimapAccum + dt, 0.25);
+
     if (this.hitmarkerTimer > 0) {
       this.hitmarkerTimer -= dt;
       if (this.hitmarkerTimer <= 0) this.hitmarker.classList.add('hidden');
@@ -634,6 +770,10 @@ export class HUD {
     if (this.actBannerTimer > 0) {
       this.actBannerTimer -= dt;
       if (this.actBannerTimer <= 0) this.actBanner.classList.add('hidden');
+    }
+    if (this.intertitleTimer > 0) {
+      this.intertitleTimer -= dt;
+      if (this.intertitleTimer <= 0) this.hideIntertitle();
     }
   }
 }

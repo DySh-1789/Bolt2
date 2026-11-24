@@ -454,18 +454,10 @@ export class RikhardSmasherBoss {
 
     this.group.add(this.leftClaw);
 
-    // Enable shadow casting across the full 3m cyber-frame
-    this.group.traverse((obj) => {
-      if (obj instanceof THREE.Mesh) {
-        obj.castShadow = true;
-        obj.receiveShadow = true;
-      }
-    });
-
-    // Menacing crimson aura light
-    this.auraLight = new THREE.PointLight(0xff1a48, 8.5, 16, 1.5);
-    this.auraLight.position.set(0, 2.35, 0.85);
-    this.group.add(this.auraLight);
+    // Menacing crimson aura light mounted directly on scene (never toggled via group.visible -> 0 shader recompiles)
+    this.auraLight = new THREE.PointLight(0xff1a48, 0, 16, 1.5);
+    this.auraLight.position.set(0, -88, -70);
+    this.scene.add(this.auraLight);
 
     this.hitMeshes = hitList;
   }
@@ -494,6 +486,8 @@ export class RikhardSmasherBoss {
     this.state.startFight();
     this.clearEffects();
     this.group.position.set(x, y, z);
+    this.auraLight.position.set(x, y + 2.35, z + 0.85);
+    this.auraLight.intensity = 8.5;
     this.group.rotation.set(0, 0, 0);
     this.leftLegPivot.rotation.set(0, 0, 0);
     this.rightLegPivot.rotation.set(0, 0, 0);
@@ -523,6 +517,7 @@ export class RikhardSmasherBoss {
     this.clearEffects();
     this.chestPlateMat.emissive.setHex(0x000000);
     this.chestPlateMat.emissiveIntensity = 0;
+    this.auraLight.intensity = 0;
     this.group.visible = false;
   }
 
@@ -766,6 +761,7 @@ export class RikhardSmasherBoss {
     this.coreMat.emissive.setHex(activeCoreHex);
     this.auraLight.color.setHex(p3 ? 0x00e5ff : 0xff1a48);
     this.auraLight.intensity = p3 ? 11.5 : 8.5;
+    this.auraLight.position.set(this.group.position.x, this.group.position.y + 2.35, this.group.position.z + 0.85);
 
     // Continuous armor sparks if weakened by Netrunner breach
     if (this.state.armorWeakenedPercent > 0) {

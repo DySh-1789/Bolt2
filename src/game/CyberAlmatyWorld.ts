@@ -72,7 +72,7 @@ export class CyberAlmatyWorld {
   readonly marumPos: Vec3 = { x: -46, y: 0, z: -40 };
   readonly junkyardWakePos: Vec3 = { x: -165, y: 0, z: 165 };
   readonly motelRoomPos: Vec3 = { x: -165, y: 0, z: -162 };
-  readonly motelSinkPos: Vec3 = { x: -172, y: 0, z: -170 };
+  readonly motelSinkPos: Vec3 = { x: -172.6, y: 0.25, z: -173.2 };
   readonly towerEntrancePos: Vec3 = { x: 170, y: 0, z: -136 };
 
   private samirRooftopRig!: CharacterRig;
@@ -80,13 +80,15 @@ export class CyberAlmatyWorld {
   private egorMarumRig!: CharacterRig;
   private motelArtemRig!: CharacterRig;
   private motelBodyguardRig!: CharacterRig;
+  private motelBodyguardChoking = false;
   private artemCorpseGroup = new THREE.Group();
 
   private hologramSigns: Array<{ mesh: THREE.Mesh; baseY: number }> = [];
   private steamPuffs: SteamPuffState[] = [];
-  private rooftopSteamLight?: THREE.PointLight;
   private motelNeonSignMat?: THREE.MeshStandardMaterial;
-  private motelFlickerLight?: THREE.PointLight;
+  private motelBathTubeMat?: THREE.MeshStandardMaterial;
+  private motelTvMat?: THREE.MeshStandardMaterial;
+  private motelBedNeonMat?: THREE.MeshStandardMaterial;
   private avFleet: FlyingAVState[] = [];
   private blinkingBeacons: THREE.MeshStandardMaterial[] = [];
 
@@ -119,6 +121,33 @@ export class CyberAlmatyWorld {
     this.buildFlyingAVTraffic();
     this.buildCyberRain();
     this.registerInteractables();
+  }
+
+  /**
+   * Registers a pooled, zero-recompilation dynamic light anchor with ChunkManager
+   * instead of creating per-chunk PointLights that trigger WebGL shader stalls.
+   */
+  private registerLightAnchor(
+    x: number,
+    y: number,
+    z: number,
+    colorHex: number,
+    intensity: number,
+    distance: number,
+  ): void {
+    const chunkApi = this.chunks as unknown as {
+      registerLightAnchor?: (
+        ax: number,
+        ay: number,
+        az: number,
+        color: number,
+        int: number,
+        dist: number,
+      ) => void;
+    };
+    if (typeof chunkApi.registerLightAnchor === 'function') {
+      chunkApi.registerLightAnchor(x, y, z, colorHex, intensity, distance);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -383,6 +412,169 @@ export class CyberAlmatyWorld {
     });
   }
 
+  private createMotelWallpaperTexture(repeatX = 3, repeatY = 1): THREE.CanvasTexture {
+    return this.createCanvasTex(
+      512,
+      512,
+      (ctx, w, h) => {
+        // Aged seedy burgundy-ochre retro motel plaster & peeling wallpaper
+        const grad = ctx.createLinearGradient(0, 0, 0, h);
+        grad.addColorStop(0, '#2a161c');
+        grad.addColorStop(0.55, '#3b1c22');
+        grad.addColorStop(0.74, '#241418');
+        grad.addColorStop(1, '#1a1114');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+
+        // Faded vertical vintage wallpaper stripes
+        for (let x = 0; x < w; x += 32) {
+          ctx.fillStyle = x % 64 === 0 ? 'rgba(140, 56, 68, 0.18)' : 'rgba(18, 8, 10, 0.22)';
+          ctx.fillRect(x, 0, 14, h * 0.72);
+        }
+
+        // Scuffed dark wood-panel wainscot along lower third + trim rail
+        ctx.fillStyle = '#221512';
+        ctx.fillRect(0, h * 0.72, w, h * 0.28);
+        ctx.fillStyle = '#472a20';
+        ctx.fillRect(0, h * 0.71, w, 10);
+        for (let x = 0; x < w; x += 64) {
+          ctx.fillStyle = 'rgba(0,0,0,0.34)';
+          ctx.fillRect(x, h * 0.72, 4, h * 0.28);
+        }
+
+        // Damp water stains & peeling plaster patches
+        for (let i = 0; i < 16; i++) {
+          const sx = (i * 97 + 24) % w;
+          const sy = (i * 53 + 12) % Math.floor(h * 0.65);
+          ctx.fillStyle = i % 3 === 0 ? 'rgba(10, 8, 12, 0.32)' : 'rgba(130, 110, 92, 0.14)';
+          ctx.fillRect(sx, sy, 28 + (i % 4) * 14, 42 + (i % 5) * 18);
+        }
+      },
+      repeatX,
+      repeatY,
+    );
+  }
+
+  private createMotelFloorTexture(repeatX = 5, repeatY = 5): THREE.CanvasTexture {
+    return this.createCanvasTex(
+      256,
+      256,
+      (ctx, w, h) => {
+        // Worn stained dark maroon-brown cheap motel carpet
+        ctx.fillStyle = '#211418';
+        ctx.fillRect(0, 0, w, h);
+
+        // Faded retro geometric motel carpet diamond weave
+        ctx.strokeStyle = 'rgba(130, 52, 62, 0.28)';
+        ctx.lineWidth = 3;
+        for (let y = 0; y < h; y += 32) {
+          for (let x = 0; x < w; x += 32) {
+            ctx.beginPath();
+            ctx.moveTo(x + 16, y + 3);
+            ctx.lineTo(x + 29, y + 16);
+            ctx.lineTo(x + 16, y + 29);
+            ctx.lineTo(x + 3, y + 16);
+            ctx.closePath();
+            ctx.stroke();
+          }
+        }
+
+        // Scuff grime & cigarette burn marks
+        for (let i = 0; i < 24; i++) {
+          ctx.fillStyle = i % 2 === 0 ? 'rgba(8, 6, 8, 0.35)' : 'rgba(90, 60, 44, 0.14)';
+          ctx.beginPath();
+          ctx.arc((i * 47) % w, (i * 83) % h, 4 + (i % 9), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      },
+      repeatX,
+      repeatY,
+    );
+  }
+
+  private createBathroomTileTexture(repeatX = 4, repeatY = 4): THREE.CanvasTexture {
+    return this.createCanvasTex(
+      256,
+      256,
+      (ctx, w, h) => {
+        // Cold dirty off-white / pale-cyan porcelain bathroom tiles
+        ctx.fillStyle = '#aebdc0';
+        ctx.fillRect(0, 0, w, h);
+
+        const step = 32;
+        for (let y = 0; y < h; y += step) {
+          for (let x = 0; x < w; x += step) {
+            const shade = ((x * 13 + y * 29) % 5) * 6;
+            ctx.fillStyle = `rgb(${182 - shade}, ${196 - shade}, ${198 - shade})`;
+            ctx.fillRect(x + 2, y + 2, step - 4, step - 4);
+          }
+        }
+
+        // Dark mildew grout lines
+        ctx.strokeStyle = '#38464c';
+        ctx.lineWidth = 3;
+        for (let i = 0; i <= w; i += step) {
+          ctx.beginPath();
+          ctx.moveTo(i, 0);
+          ctx.lineTo(i, h);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(0, i);
+          ctx.lineTo(w, i);
+          ctx.stroke();
+        }
+
+        // Subtle rust / water grime streaks
+        for (let i = 0; i < 10; i++) {
+          ctx.fillStyle = i % 2 === 0 ? 'rgba(65, 52, 40, 0.18)' : 'rgba(35, 62, 72, 0.15)';
+          ctx.fillRect((i * 59) % w, (i * 37) % h, 14 + (i % 12), 28 + (i % 24));
+        }
+      },
+      repeatX,
+      repeatY,
+    );
+  }
+
+  private createMotelTvTexture(): THREE.CanvasTexture {
+    return this.createCanvasTex(512, 256, (ctx, w, h) => {
+      // Flickering CRT late-night news static broadcast
+      const grad = ctx.createLinearGradient(0, 0, w, h);
+      grad.addColorStop(0, '#071b2e');
+      grad.addColorStop(0.55, '#14263b');
+      grad.addColorStop(1, '#260b1a');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      // CRT scanlines
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+      for (let y = 0; y < h; y += 5) {
+        ctx.fillRect(0, y, w, 2);
+      }
+
+      // Breaking news red bar
+      ctx.fillStyle = '#ff003c';
+      ctx.fillRect(16, 18, w - 32, 34);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '900 22px "Consolas", monospace';
+      ctx.fillText('LIVE // ALMATY-54 NEWS — РОЗЫСК', 28, 42);
+
+      // Main static headline
+      ctx.fillStyle = '#00f0ff';
+      ctx.font = '900 32px "Segoe UI", "Arial Black", sans-serif';
+      ctx.fillText('УБИЙСТВО ЛЬВА МАРАКУЛИНА', 24, 114);
+      ctx.fillStyle = '#fcee0a';
+      ctx.font = '700 22px "Consolas", monospace';
+      ctx.fillText('ПОДОЗРЕВАЕМЫЕ СКРЫЛИСЬ В ТАСТАКЕ', 24, 158);
+
+      // Lower ticker bar
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+      ctx.fillRect(16, h - 54, w - 32, 34);
+      ctx.fillStyle = '#ff6a8a';
+      ctx.font = '700 18px "Consolas", monospace';
+      ctx.fillText('КОРПОРАЦИЯ ОБЪЯВИЛА НАГРАДУ: 500 000 ₸ // НЕ ВЕРЬТЕ НИКОМУ', 26, h - 31);
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Ground, Roads & Wet Reflective Puddles
   // ---------------------------------------------------------------------------
@@ -418,6 +610,7 @@ export class CyberAlmatyWorld {
     const hemi = new THREE.HemisphereLight(0x5278b8, 0x1c1028, 1.05);
     this.chunks.addLandmark(hemi);
     const moonDir = new THREE.DirectionalLight(0x88b8ff, 0.78);
+    moonDir.castShadow = false;
     moonDir.position.set(120, 220, 180);
     this.chunks.addLandmark(moonDir);
 
@@ -747,9 +940,7 @@ export class CyberAlmatyWorld {
     lampRing.position.set(cx - 7.5, 3.65, cz - 4);
     group.add(lampRing);
 
-    const surgicalLight = new THREE.PointLight(0x66ffdd, 4.2, 14);
-    surgicalLight.position.set(cx - 7.5, 3.4, cz - 4);
-    this.chunks.addToChunk(cx, cz, surgicalLight);
+    this.registerLightAnchor(cx - 7.5, 3.4, cz - 4, 0x66ffdd, 4.2, 14);
 
     const ripperNpc = buildRipperdocModel();
     ripperNpc.group.position.set(cx - 5.8, 0.25, cz - 4);
@@ -777,14 +968,9 @@ export class CyberAlmatyWorld {
     this.egorMarumRig.group.visible = false;
     group.add(this.egorMarumRig.group);
 
-    // Warm cyberpunk lounge illumination
-    const mainLight = new THREE.PointLight(0x00e5ff, 4.4, 28);
-    mainLight.position.set(cx, 5.6, cz + 1);
-    this.chunks.addToChunk(cx, cz, mainLight);
-
-    const barWarmLight = new THREE.PointLight(0xffaa33, 3.4, 18);
-    barWarmLight.position.set(cx, 4.4, cz - 7.2);
-    this.chunks.addToChunk(cx, cz, barWarmLight);
+    // Pooled light anchors for Marum cyberpunk lounge & bar (zero WebGL shader recompiles)
+    this.registerLightAnchor(cx, 5.6, cz + 1, 0x00e5ff, 4.4, 28);
+    this.registerLightAnchor(cx, 4.4, cz - 7.2, 0xffaa33, 3.4, 18);
 
     this.chunks.addToChunk(cx, cz, group);
     this.minimapBuildings.push({
@@ -797,184 +983,522 @@ export class CyberAlmatyWorld {
   }
 
   // ---------------------------------------------------------------------------
-  // Gritty Artem's Motel in Cyber-Tastak (X=-165, Z=-165) — Act 4 Betrayal
+  // Seedy Cyber-Tastak Motel Room 204 (X=-165, Z=-165) — Act 4 Betrayal
   // ---------------------------------------------------------------------------
 
   private buildArtemMotel(): void {
     const cx = -165;
     const cz = -165;
+    const wallH = 5.4;
     const group = new THREE.Group();
 
-    const wallMat = new THREE.MeshStandardMaterial({
+    const exteriorMat = new THREE.MeshStandardMaterial({
       map: this.textures.getWallPanel('#ff2a6d', 2, 1),
-      roughness: 0.58,
-      metalness: 0.42,
+      roughness: 0.64,
+      metalness: 0.38,
     });
-    const floorMat = new THREE.MeshStandardMaterial({
-      map: this.textures.getFloorTile('#ff2a6d', 3, 3),
-      roughness: 0.48,
-      metalness: 0.3,
+    const wallpaperMat = new THREE.MeshStandardMaterial({
+      map: this.createMotelWallpaperTexture(3, 1),
+      roughness: 0.78,
+      metalness: 0.12,
     });
-    const darkSteel = new THREE.MeshStandardMaterial({ color: 0x161a24, roughness: 0.45, metalness: 0.72 });
+    const carpetMat = new THREE.MeshStandardMaterial({
+      map: this.createMotelFloorTexture(5, 5),
+      roughness: 0.88,
+      metalness: 0.08,
+    });
+    const bathTileFloorMat = new THREE.MeshStandardMaterial({
+      map: this.createBathroomTileTexture(4, 4),
+      roughness: 0.34,
+      metalness: 0.18,
+    });
+    const bathTileWallMat = new THREE.MeshStandardMaterial({
+      map: this.createBathroomTileTexture(3, 2),
+      roughness: 0.36,
+      metalness: 0.16,
+    });
+    const ceilingMat = new THREE.MeshStandardMaterial({ color: 0x1a151b, roughness: 0.9, metalness: 0.1 });
+    const darkSteel = new THREE.MeshStandardMaterial({ color: 0x171b24, roughness: 0.48, metalness: 0.72 });
+    const scuffedWood = new THREE.MeshStandardMaterial({ color: 0x2f1c14, roughness: 0.76, metalness: 0.14 });
+    const leatherMat = new THREE.MeshStandardMaterial({ color: 0x2b1216, roughness: 0.56, metalness: 0.16 });
+    const porcelainMat = new THREE.MeshStandardMaterial({ color: 0xd4dfe2, roughness: 0.24, metalness: 0.15 });
     const chromeMat = new THREE.MeshStandardMaterial({ color: 0xd8e4f0, roughness: 0.16, metalness: 0.94 });
     const bloodMat = new THREE.MeshStandardMaterial({
       color: 0x7d0614,
-      emissive: 0x2a0206,
-      emissiveIntensity: 0.35,
+      emissive: 0x2e0207,
+      emissiveIntensity: 0.4,
       roughness: 0.22,
       metalness: 0.18,
     });
+    const redNeonMat = this.makeNeonStripMaterial(0xff2255, 1.65);
+    this.motelBedNeonMat = redNeonMat;
+    const amberLampMat = this.makeNeonStripMaterial(0xff9b33, 1.55);
+    const cyanCredMat = this.makeNeonStripMaterial(0x00f0ff, 1.6);
+    const goldCredMat = this.makeNeonStripMaterial(0xfcee0a, 1.5);
+    const bottleGreenMat = this.makeNeonStripMaterial(0x28cc66, 0.85);
+    const bottleAmberMat = this.makeNeonStripMaterial(0xff9922, 0.95);
 
-    const floor = new THREE.Mesh(new THREE.BoxGeometry(24, 0.25, 22), floorMat);
+    // Main room floor (X: -176..-154, Z: -176..-154) & low seedy ceiling
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(22.8, 0.25, 22.8), carpetMat);
     floor.position.set(cx, 0.1, cz);
     group.add(floor);
 
-    const roof = new THREE.Mesh(new THREE.BoxGeometry(25, 1, 23), wallMat);
-    roof.position.set(cx, 6.2, cz);
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(23.6, 0.85, 23.6), exteriorMat);
+    roof.position.set(cx, wallH + 0.42, cz);
     group.add(roof);
 
-    const addWall = (id: string, wx: number, wz: number, sx: number, sz: number) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(sx, 6, sz), wallMat);
-      m.position.set(wx, 3, wz);
+    const ceilingDrop = new THREE.Mesh(new THREE.PlaneGeometry(21.6, 21.6), ceilingMat);
+    ceilingDrop.rotation.x = Math.PI / 2;
+    ceilingDrop.position.set(cx, wallH - 0.02, cz);
+    group.add(ceilingDrop);
+
+    const addOuterWall = (id: string, wx: number, wz: number, sx: number, sz: number) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(sx, wallH, sz), exteriorMat);
+      m.position.set(wx, wallH * 0.5, wz);
       group.add(m);
-      this.chunks.addChunkCollider(this.physics, id, wx, 3, wz, sx, 6, sz);
+      this.chunks.addChunkCollider(this.physics, id, wx, wallH * 0.5, wz, sx, wallH, sz);
     };
-    addWall('motel_back', cx, cz - 10.6, 24, 0.8);
-    addWall('motel_left', cx - 11.6, cz, 0.8, 22);
-    addWall('motel_right', cx + 11.6, cz, 0.8, 22);
-    addWall('motel_front_l', cx - 8, cz + 10.6, 7.5, 0.8);
-    addWall('motel_front_r', cx + 8, cz + 10.6, 7.5, 0.8);
-    // Bathroom divider inside motel
-    addWall('motel_bath_wall', cx - 3.5, cz - 4.5, 0.6, 8);
+    // Room 204 outer shell (X: -176..-154, Z: -176..-154), entrance facing +Z at Z = -154.4
+    addOuterWall('motel_back', cx, -175.6, 22.4, 0.8);
+    addOuterWall('motel_left', -175.6, cz, 0.8, 22.4);
+    addOuterWall('motel_right', -154.4, cz, 0.8, 22.4);
+    addOuterWall('motel_front_l', -171.6, -154.4, 8.4, 0.8);
+    addOuterWall('motel_front_r', -158.4, -154.4, 8.4, 0.8);
 
-    // Bathroom Sink with chrome faucet + gritty crimson bloodstain detail (Act 4 wash-up scene)
-    const sinkBase = new THREE.Mesh(
-      new THREE.BoxGeometry(1.55, 0.92, 1.02),
-      new THREE.MeshStandardMaterial({ color: 0x99aebf, roughness: 0.28, metalness: 0.55 }),
+    // Interior wallpaper lining on main room walls so interior feels unmistakably like a cheap motel
+    const northLining = new THREE.Mesh(new THREE.PlaneGeometry(12.6, wallH), wallpaperMat);
+    northLining.position.set(-161.1, wallH * 0.5, -175.16);
+    group.add(northLining);
+
+    const eastLining = new THREE.Mesh(new THREE.PlaneGeometry(20.4, wallH), wallpaperMat);
+    eastLining.rotation.y = -Math.PI / 2;
+    eastLining.position.set(-154.84, wallH * 0.5, cz);
+    group.add(eastLining);
+
+    const westSouthLining = new THREE.Mesh(new THREE.PlaneGeometry(12.6, wallH), wallpaperMat);
+    westSouthLining.rotation.y = Math.PI / 2;
+    westSouthLining.position.set(-175.16, wallH * 0.5, -161.1);
+    group.add(westSouthLining);
+
+    const southLiningL = new THREE.Mesh(new THREE.PlaneGeometry(7.8, wallH), wallpaperMat);
+    southLiningL.rotation.y = Math.PI;
+    southLiningL.position.set(-171.3, wallH * 0.5, -154.84);
+    group.add(southLiningL);
+
+    const southLiningR = new THREE.Mesh(new THREE.PlaneGeometry(7.8, wallH), wallpaperMat);
+    southLiningR.rotation.y = Math.PI;
+    southLiningR.position.set(-158.7, wallH * 0.5, -154.84);
+    group.add(southLiningR);
+
+    // Entrance transom header, rain canopy, red trim & glowing Room "204" door plate
+    const entryHeader = new THREE.Mesh(new THREE.BoxGeometry(4.9, 1.55, 0.82), exteriorMat);
+    entryHeader.position.set(cx, 4.62, -154.4);
+    group.add(entryHeader);
+
+    const canopy = new THREE.Mesh(new THREE.BoxGeometry(9.6, 0.28, 2.4), darkSteel);
+    canopy.position.set(cx, 4.05, -153.1);
+    group.add(canopy);
+    const canopyTrim = new THREE.Mesh(new THREE.BoxGeometry(9.65, 0.1, 0.12), redNeonMat);
+    canopyTrim.position.set(cx, 3.98, -151.9);
+    group.add(canopyTrim);
+
+    const room204Tex = this.textures.getNeonSign('204', 'НОМЕР', '#fcee0a', '#ff2a6d');
+    const room204Plate = new THREE.Mesh(new THREE.PlaneGeometry(1.45, 0.72), this.makeSignMaterial(room204Tex, 0.9));
+    room204Plate.position.set(-161.7, 2.45, -153.96);
+    group.add(room204Plate);
+
+    // Scuffed doormat inside entrance
+    const doormat = new THREE.Mesh(
+      new THREE.BoxGeometry(2.4, 0.04, 1.15),
+      new THREE.MeshStandardMaterial({ color: 0x3b261c, roughness: 0.95 }),
     );
-    sinkBase.position.set(cx - 7.5, 0.56, cz - 9.4);
-    group.add(sinkBase);
+    doormat.position.set(cx, 0.24, -155.5);
+    group.add(doormat);
 
-    const basin = new THREE.Mesh(
-      new THREE.BoxGeometry(1.15, 0.14, 0.72),
-      new THREE.MeshStandardMaterial({ color: 0x3a4854, roughness: 0.35, metalness: 0.4 }),
+    // -------------------------------------------------------------------------
+    // SEPARATE ENCLOSED TILED BATHROOM IN NW CORNER (X: -176..-167.5, Z: -176..-167.5)
+    // South wall at Z=-167.5, East wall at X=-167.5 with clean 2.4m doorway (Z: -171.2..-168.8)
+    // -------------------------------------------------------------------------
+    const bathFloor = new THREE.Mesh(new THREE.BoxGeometry(7.7, 0.06, 7.7), bathTileFloorMat);
+    bathFloor.position.set(-171.4, 0.235, -171.4);
+    group.add(bathFloor);
+
+    // Tiled inner wall panels on North & West outer walls inside bathroom
+    const bathNorthTile = new THREE.Mesh(new THREE.PlaneGeometry(7.7, wallH), bathTileWallMat);
+    bathNorthTile.position.set(-171.4, wallH * 0.5, -175.15);
+    group.add(bathNorthTile);
+
+    const bathWestTile = new THREE.Mesh(new THREE.PlaneGeometry(7.7, wallH), bathTileWallMat);
+    bathWestTile.rotation.y = Math.PI / 2;
+    bathWestTile.position.set(-175.15, wallH * 0.5, -171.4);
+    group.add(bathWestTile);
+
+    // South bathroom partition wall (Z = -167.5, X: -175.2..-167.5)
+    const bathSouthWall = new THREE.Mesh(new THREE.BoxGeometry(7.7, wallH, 0.45), wallpaperMat);
+    bathSouthWall.position.set(-171.35, wallH * 0.5, -167.5);
+    group.add(bathSouthWall);
+    this.chunks.addChunkCollider(this.physics, 'motel_bath_south', -171.35, wallH * 0.5, -167.5, 7.7, wallH, 0.45);
+
+    const bathSouthInnerTile = new THREE.Mesh(new THREE.PlaneGeometry(7.6, wallH), bathTileWallMat);
+    bathSouthInnerTile.rotation.y = Math.PI;
+    bathSouthInnerTile.position.set(-171.35, wallH * 0.5, -167.74);
+    group.add(bathSouthInnerTile);
+
+    // East bathroom partition wall (X = -167.5) split cleanly around 2.4m doorway (Z: -171.2..-168.8)
+    const bathEastNorth = new THREE.Mesh(new THREE.BoxGeometry(0.45, wallH, 4.0), wallpaperMat);
+    bathEastNorth.position.set(-167.5, wallH * 0.5, -173.2);
+    group.add(bathEastNorth);
+    this.chunks.addChunkCollider(this.physics, 'motel_bath_east_n', -167.5, wallH * 0.5, -173.2, 0.45, wallH, 4.0);
+
+    const bathEastNorthInner = new THREE.Mesh(new THREE.PlaneGeometry(3.95, wallH), bathTileWallMat);
+    bathEastNorthInner.rotation.y = -Math.PI / 2;
+    bathEastNorthInner.position.set(-167.74, wallH * 0.5, -173.2);
+    group.add(bathEastNorthInner);
+
+    const bathEastSouth = new THREE.Mesh(new THREE.BoxGeometry(0.45, wallH, 1.52), wallpaperMat);
+    bathEastSouth.position.set(-167.5, wallH * 0.5, -168.04);
+    group.add(bathEastSouth);
+    this.chunks.addChunkCollider(this.physics, 'motel_bath_east_s', -167.5, wallH * 0.5, -168.04, 0.45, wallH, 1.52);
+
+    const bathEastSouthInner = new THREE.Mesh(new THREE.PlaneGeometry(1.48, wallH), bathTileWallMat);
+    bathEastSouthInner.rotation.y = -Math.PI / 2;
+    bathEastSouthInner.position.set(-167.74, wallH * 0.5, -168.04);
+    group.add(bathEastSouthInner);
+
+    // Doorway lintel & wooden/steel door jambs framing Z: -171.2..-168.8
+    const bathLintel = new THREE.Mesh(new THREE.BoxGeometry(0.48, 2.35, 2.44), wallpaperMat);
+    bathLintel.position.set(-167.5, 4.22, -170.0);
+    group.add(bathLintel);
+
+    for (const jz of [-171.18, -168.82]) {
+      const jamb = new THREE.Mesh(new THREE.BoxGeometry(0.54, 3.08, 0.14), scuffedWood);
+      jamb.position.set(-167.5, 1.54, jz);
+      group.add(jamb);
+    }
+    const topJamb = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.14, 2.5), scuffedWood);
+    topJamb.position.set(-167.5, 3.04, -170.0);
+    group.add(topJamb);
+
+    // Slightly ajar scuffed bathroom door swung inward into NE bathroom corner (clear of doorway & choke spot)
+    const bathDoor = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.9, 1.95), scuffedWood);
+    bathDoor.position.set(-168.15, 1.48, -172.05);
+    bathDoor.rotation.y = 0.52;
+    group.add(bathDoor);
+
+    // Tiled plumbing bulkhead behind the sink so sink & mirror sit flush against tiled wall
+    const sinkBulkhead = new THREE.Mesh(new THREE.BoxGeometry(3.8, wallH, 0.92), bathTileWallMat);
+    sinkBulkhead.position.set(-173.25, wallH * 0.5, -174.7);
+    group.add(sinkBulkhead);
+
+    // Porcelain Sink & Chrome Faucet with subtle crimson stains at (-173.2, 0.25, -173.8)
+    const sinkX = -173.2;
+    const sinkZ = -173.8;
+    const sinkPedestal = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.26, 0.72, 10), porcelainMat);
+    sinkPedestal.position.set(sinkX, 0.61, sinkZ - 0.04);
+    group.add(sinkPedestal);
+
+    const sinkCounter = new THREE.Mesh(new THREE.BoxGeometry(1.38, 0.2, 0.84), porcelainMat);
+    sinkCounter.position.set(sinkX, 1.02, sinkZ);
+    group.add(sinkCounter);
+
+    const sinkBasin = new THREE.Mesh(
+      new THREE.BoxGeometry(1.02, 0.09, 0.56),
+      new THREE.MeshStandardMaterial({ color: 0x62737c, roughness: 0.28, metalness: 0.3 }),
     );
-    basin.position.set(cx - 7.5, 1.0, cz - 9.35);
-    group.add(basin);
+    sinkBasin.position.set(sinkX, 1.09, sinkZ + 0.03);
+    group.add(sinkBasin);
 
-    // Bloody water pool & splatter in sink + drops on floor
-    const bloodPool = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.04, 0.52), bloodMat);
-    bloodPool.position.set(cx - 7.5, 1.07, cz - 9.35);
+    // Subtle crimson bloodstains inside sink basin, rim drip, and floor tiles
+    const bloodPool = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.025, 0.38), bloodMat);
+    bloodPool.position.set(sinkX, 1.135, sinkZ + 0.03);
     group.add(bloodPool);
 
-    const bloodRim = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.18, 0.04), bloodMat);
-    bloodRim.position.set(cx - 7.25, 0.94, cz - 8.88);
+    const bloodRim = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.16, 0.03), bloodMat);
+    bloodRim.position.set(sinkX + 0.24, 1.01, sinkZ + 0.43);
     group.add(bloodRim);
 
-    const bloodFloor = new THREE.Mesh(new THREE.CircleGeometry(0.36, 10), bloodMat);
-    bloodFloor.rotation.x = -Math.PI / 2;
-    bloodFloor.position.set(cx - 7.3, 0.24, cz - 8.45);
-    group.add(bloodFloor);
+    const bloodDrop = new THREE.Mesh(new THREE.CircleGeometry(0.28, 10), bloodMat);
+    bloodDrop.rotation.x = -Math.PI / 2;
+    bloodDrop.position.set(sinkX + 0.18, 0.275, sinkZ + 0.78);
+    group.add(bloodDrop);
 
-    // Chrome faucet
-    const faucetPipe = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.28, 8), chromeMat);
-    faucetPipe.position.set(cx - 7.5, 1.16, cz - 9.76);
-    group.add(faucetPipe);
-    const faucetSpout = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.22), chromeMat);
-    faucetSpout.position.set(cx - 7.5, 1.28, cz - 9.65);
+    // Chrome faucet & twin taps
+    const faucetStem = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.032, 0.26, 8), chromeMat);
+    faucetStem.position.set(sinkX, 1.24, sinkZ - 0.28);
+    group.add(faucetStem);
+    const faucetSpout = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.045, 0.24), chromeMat);
+    faucetSpout.position.set(sinkX, 1.35, sinkZ - 0.18);
     group.add(faucetSpout);
+    for (const tx of [-0.14, 0.14]) {
+      const tap = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, 0.08, 8), chromeMat);
+      tap.position.set(sinkX + tx, 1.16, sinkZ - 0.28);
+      group.add(tap);
+    }
 
-    // Chrome-framed mirror + buzzing overhead fluorescent light bar
-    const mirrorFrame = new THREE.Mesh(new THREE.BoxGeometry(2.04, 1.54, 0.08), darkSteel);
-    mirrorFrame.position.set(cx - 7.5, 1.92, cz - 10.14);
+    // Glowing chrome-framed bathroom mirror directly above sink
+    const mirrorFrame = new THREE.Mesh(new THREE.BoxGeometry(1.94, 1.46, 0.09), chromeMat);
+    mirrorFrame.position.set(sinkX, 1.98, -174.22);
     group.add(mirrorFrame);
 
-    const mirror = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.86, 1.36),
+    const mirrorGlass = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.78, 1.3),
       new THREE.MeshStandardMaterial({
-        color: 0x77ccff,
-        emissive: 0x164466,
-        emissiveIntensity: 0.78,
-        metalness: 0.95,
-        roughness: 0.07,
+        color: 0x8ad8f8,
+        emissive: 0x1a5a78,
+        emissiveIntensity: 0.85,
+        metalness: 0.96,
+        roughness: 0.06,
       }),
     );
-    mirror.position.set(cx - 7.5, 1.92, cz - 10.08);
-    group.add(mirror);
+    mirrorGlass.position.set(sinkX, 1.98, -174.16);
+    group.add(mirrorGlass);
 
-    const bathTube = new THREE.Mesh(
-      new THREE.BoxGeometry(1.8, 0.1, 0.12),
-      this.makeNeonStripMaterial(0xc8f4ff, 1.5),
+    // Cold cyan flickering fluorescent tube overhead (mirror + bathroom ceiling)
+    this.motelBathTubeMat = this.makeNeonStripMaterial(0xaef6ff, 1.85);
+    const mirrorTubeHousing = new THREE.Mesh(new THREE.BoxGeometry(1.88, 0.12, 0.16), darkSteel);
+    mirrorTubeHousing.position.set(sinkX, 2.94, -174.14);
+    group.add(mirrorTubeHousing);
+    const mirrorTube = new THREE.Mesh(new THREE.BoxGeometry(1.76, 0.08, 0.1), this.motelBathTubeMat);
+    mirrorTube.position.set(sinkX, 2.86, -174.08);
+    group.add(mirrorTube);
+
+    const ceilingBathTube = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.09, 0.16), this.motelBathTubeMat);
+    ceilingBathTube.position.set(-171.4, wallH - 0.12, -171.3);
+    group.add(ceilingBathTube);
+
+    // Porcelain Toilet prop in SW bathroom corner (-174.35, 0.25, -168.7) facing East
+    const toiletGroup = new THREE.Group();
+    toiletGroup.position.set(-174.35, 0.25, -168.7);
+    const toiletTank = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.72, 0.56), porcelainMat);
+    toiletTank.position.set(-0.26, 0.76, 0);
+    toiletGroup.add(toiletTank);
+    const toiletBase = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.2, 0.44, 10), porcelainMat);
+    toiletBase.position.set(0.1, 0.24, 0);
+    toiletGroup.add(toiletBase);
+    const toiletBowl = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.24, 0.14, 12), porcelainMat);
+    toiletBowl.position.set(0.14, 0.48, 0);
+    toiletGroup.add(toiletBowl);
+    const toiletSeat = new THREE.Mesh(
+      new THREE.TorusGeometry(0.22, 0.04, 8, 14),
+      new THREE.MeshStandardMaterial({ color: 0xbac6ca, roughness: 0.3 }),
     );
-    bathTube.position.set(cx - 7.5, 2.86, cz - 9.95);
-    group.add(bathTube);
+    toiletSeat.rotation.x = Math.PI / 2;
+    toiletSeat.position.set(0.15, 0.56, 0);
+    toiletGroup.add(toiletSeat);
+    const flushHandle = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.04, 0.14), chromeMat);
+    flushHandle.position.set(-0.14, 1.02, 0.3);
+    toiletGroup.add(flushHandle);
+    group.add(toiletGroup);
 
-    // Gritty motel furniture tucked cleanly against East wall (clear combat arena!)
-    const bedFrame = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.55, 2.6), darkSteel);
-    bedFrame.position.set(cx + 8.6, 0.45, cz - 7.4);
+    // -------------------------------------------------------------------------
+    // MAIN MOTEL ROOM 204 PROPS (Distinctly seedy Cyber-Tastak atmosphere)
+    // -------------------------------------------------------------------------
+
+    // 1. Cheap scuffed motel bed against East wall (-157, 0.25, -163) with rumpled blanket & red neon headboard tube
+    const bedX = -156.85;
+    const bedZ = -163.0;
+    const bedFrame = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.42, 2.55), scuffedWood);
+    bedFrame.position.set(bedX, 0.44, bedZ);
     group.add(bedFrame);
+    this.chunks.addChunkCollider(this.physics, 'motel_bed', bedX, 0.62, bedZ, 3.6, 0.9, 2.55);
+
+    const headboard = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1.38, 2.65), scuffedWood);
+    headboard.position.set(-155.02, 0.94, bedZ);
+    group.add(headboard);
+
+    // Buzzing red neon tube mounted right above the motel headboard
+    const headboardNeon = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 2.45), redNeonMat);
+    headboardNeon.position.set(-154.96, 1.88, bedZ);
+    group.add(headboardNeon);
+
     const mattress = new THREE.Mesh(
-      new THREE.BoxGeometry(3.9, 0.28, 2.35),
-      new THREE.MeshStandardMaterial({ color: 0x451a2e, roughness: 0.82, metalness: 0.08 }),
+      new THREE.BoxGeometry(3.35, 0.26, 2.38),
+      new THREE.MeshStandardMaterial({ color: 0x7c756c, roughness: 0.92, metalness: 0.04 }),
     );
-    mattress.position.set(cx + 8.6, 0.85, cz - 7.4);
+    mattress.position.set(bedX - 0.06, 0.76, bedZ);
     group.add(mattress);
 
-    // Low sleazy side table + bottles
-    const lowTable = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.65, 1.2), darkSteel);
-    lowTable.position.set(cx + 8.8, 0.45, cz + 2.5);
-    group.add(lowTable);
-    const bottleGlow = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.07, 0.08, 0.36, 8),
-      this.makeNeonStripMaterial(0xffaa22, 1.5),
-    );
-    bottleGlow.position.set(cx + 8.5, 0.96, cz + 2.4);
-    group.add(bottleGlow);
+    // Rumpled cheap burgundy-plum motel blanket & crinkled folds
+    const blanketMat = new THREE.MeshStandardMaterial({ color: 0x4c1728, roughness: 0.9, metalness: 0.05 });
+    const blanketMain = new THREE.Mesh(new THREE.BoxGeometry(2.25, 0.14, 2.42), blanketMat);
+    blanketMain.position.set(bedX - 0.62, 0.92, bedZ + 0.04);
+    blanketMain.rotation.y = 0.06;
+    group.add(blanketMain);
 
-    // Toggleable Story Props: Artem & Bodyguard waiting in Motel room before bathroom betrayal
+    const blanketFold = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.18, 1.85), blanketMat);
+    blanketFold.position.set(bedX - 0.25, 0.97, bedZ - 0.18);
+    blanketFold.rotation.set(0.08, -0.22, 0.14);
+    group.add(blanketFold);
+
+    // Two crooked stained pillows
+    const pillowMat = new THREE.MeshStandardMaterial({ color: 0xa9a295, roughness: 0.88 });
+    for (const [pz, rot] of [
+      [bedZ - 0.56, 0.16],
+      [bedZ + 0.52, -0.22],
+    ]) {
+      const pillow = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.18, 0.82), pillowMat);
+      pillow.position.set(-155.55, 0.96, pz);
+      pillow.rotation.y = rot;
+      group.add(pillow);
+    }
+
+    // Chipped bedside nightstand + sleazy amber motel lamp
+    const nightstand = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.72, 0.85), scuffedWood);
+    nightstand.position.set(-155.5, 0.58, -160.85);
+    group.add(nightstand);
+    const lampBase = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 0.34, 8), darkSteel);
+    lampBase.position.set(-155.5, 1.12, -160.85);
+    group.add(lampBase);
+    const lampShade = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.26, 0.28, 10), amberLampMat);
+    lampShade.position.set(-155.5, 1.38, -160.85);
+    group.add(lampShade);
+
+    // 2. Red Venetian-blind motel window on East wall (X = -154.88, Z = -158.0)
+    const winFrame = new THREE.Mesh(new THREE.BoxGeometry(0.16, 2.05, 3.75), darkSteel);
+    winFrame.position.set(-154.9, 2.45, -158.0);
+    group.add(winFrame);
+
+    const winGlow = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.52, 1.82),
+      this.makeNeonStripMaterial(0xff1e4d, 1.25),
+    );
+    winGlow.rotation.y = -Math.PI / 2;
+    winGlow.position.set(-154.96, 2.45, -158.0);
+    group.add(winGlow);
+
+    // 11 slightly tilted horizontal Venetian blind slats letting red neon bleed through
+    const slatMat = new THREE.MeshStandardMaterial({ color: 0x141016, roughness: 0.45, metalness: 0.65 });
+    for (let s = 0; s < 11; s++) {
+      const slat = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 3.54), slatMat);
+      slat.position.set(-155.02, 1.62 + s * 0.165, -158.0);
+      slat.rotation.z = 0.28;
+      group.add(slat);
+    }
+
+    // 3. Flickering CRT / holo wall TV mounted on the North wall (-161.5, 2.55, -174.8)
+    const tvHousing = new THREE.Mesh(new THREE.BoxGeometry(2.35, 1.45, 0.58), darkSteel);
+    tvHousing.position.set(-161.5, 2.55, -174.82);
+    group.add(tvHousing);
+
+    this.motelTvMat = this.makeSignMaterial(this.createMotelTvTexture(), 0.92);
+    const tvScreen = new THREE.Mesh(new THREE.PlaneGeometry(2.06, 1.16), this.motelTvMat);
+    tvScreen.position.set(-161.5, 2.55, -174.51);
+    group.add(tvScreen);
+
+    for (const [ax, rot] of [
+      [-161.85, 0.35],
+      [-161.15, -0.35],
+    ]) {
+      const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.02, 0.72, 6), chromeMat);
+      ant.position.set(ax, 3.55, -174.85);
+      ant.rotation.z = rot;
+      group.add(ant);
+    }
+
+    // 4. Artem's cracked leather armchair at (-160, 0.25, -169) + sleazy coffee table with bottles & credchips
+    const chairGroup = new THREE.Group();
+    chairGroup.position.set(-160.0, 0.25, -169.4);
+    chairGroup.rotation.y = -0.32;
+    const chairSeat = new THREE.Mesh(new THREE.BoxGeometry(1.24, 0.44, 1.12), leatherMat);
+    chairSeat.position.set(0, 0.3, 0);
+    chairGroup.add(chairSeat);
+    const chairBack = new THREE.Mesh(new THREE.BoxGeometry(1.24, 1.02, 0.28), leatherMat);
+    chairBack.position.set(0, 0.86, -0.44);
+    chairGroup.add(chairBack);
+    for (const ax of [-0.54, 0.54]) {
+      const armRest = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.52, 1.08), leatherMat);
+      armRest.position.set(ax, 0.58, -0.02);
+      chairGroup.add(armRest);
+    }
+    group.add(chairGroup);
+
+    // Sleazy low coffee table with liquor bottles & glowing credchips
+    const tableX = -162.3;
+    const tableZ = -167.2;
+    const tableTop = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.1, 1.05), scuffedWood);
+    tableTop.position.set(tableX, 0.78, tableZ);
+    group.add(tableTop);
+    for (const [lx, lz] of [
+      [-0.78, -0.4],
+      [0.78, -0.4],
+      [-0.78, 0.4],
+      [0.78, 0.4],
+    ]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.56, 0.08), darkSteel);
+      leg.position.set(tableX + lx, 0.48, tableZ + lz);
+      group.add(leg);
+    }
+    // Bottles (standing + knocked-over)
+    const b1 = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.075, 0.36, 8), bottleAmberMat);
+    b1.position.set(tableX - 0.52, 1.01, tableZ - 0.14);
+    group.add(b1);
+    const b2 = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.07, 0.32, 8), bottleGreenMat);
+    b2.position.set(tableX - 0.34, 0.99, tableZ + 0.16);
+    group.add(b2);
+    const bFallen = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.065, 0.3, 8), bottleAmberMat);
+    bFallen.rotation.z = Math.PI / 2;
+    bFallen.rotation.y = 0.6;
+    bFallen.position.set(tableX + 0.1, 0.89, tableZ + 0.22);
+    group.add(bFallen);
+    // Glowing credchips stacked on table
+    for (let c = 0; c < 4; c++) {
+      const chip = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 0.024, 0.11),
+        c % 2 === 0 ? cyanCredMat : goldCredMat,
+      );
+      chip.position.set(tableX + 0.42 + (c % 2) * 0.14, 0.845 + Math.floor(c / 2) * 0.028, tableZ - 0.12);
+      chip.rotation.y = 0.25 * c;
+      group.add(chip);
+    }
+
+    // Main room ceiling buzzing red neon halo fixture
+    const mainCeilRing = new THREE.Mesh(new THREE.TorusGeometry(0.75, 0.06, 8, 20), redNeonMat);
+    mainCeilRing.rotation.x = Math.PI / 2;
+    mainCeilRing.position.set(-161.8, wallH - 0.15, -163.5);
+    group.add(mainCeilRing);
+
+    // -------------------------------------------------------------------------
+    // Toggleable Story Props: Artem & Huge Cyber-Bodyguard
+    // -------------------------------------------------------------------------
     this.motelArtemRig = buildArtemModel();
-    this.motelArtemRig.group.position.set(cx + 3.8, 0.22, cz - 2.2);
-    this.motelArtemRig.group.rotation.y = -0.35;
+    this.motelArtemRig.group.position.set(-160.0, 0.25, -168.4);
+    this.motelArtemRig.group.rotation.y = -0.32;
     this.motelArtemRig.group.visible = false;
     group.add(this.motelArtemRig.group);
 
     this.motelBodyguardRig = buildBodyguardModel();
-    this.motelBodyguardRig.group.position.set(cx - 1.5, 0.22, cz - 3.2);
-    this.motelBodyguardRig.group.rotation.y = 0.25;
+    this.motelBodyguardRig.group.position.set(-165.5, 0.25, -169.8);
+    this.motelBodyguardRig.group.rotation.y = 0.08;
     this.motelBodyguardRig.group.visible = false;
     group.add(this.motelBodyguardRig.group);
 
-    // Flickering red neon motel sign (Bolt 1 MeshStandardMaterial standard)
-    const motelSignFrame = new THREE.Mesh(new THREE.BoxGeometry(16.5, 4.0, 0.32), darkSteel);
-    motelSignFrame.position.set(cx, 8.2, cz + 11.0);
+    // Exterior flickering red neon motel sign: МОТЕЛЬ «ТАСТАК» // НОМЕР 204
+    const motelSignFrame = new THREE.Mesh(new THREE.BoxGeometry(16.8, 4.1, 0.34), darkSteel);
+    motelSignFrame.position.set(cx, 7.6, -154.0);
     group.add(motelSignFrame);
 
     const motelSignTex = this.textures.getNeonSign(
       'МОТЕЛЬ «ТАСТАК»',
-      'НОМЕРА ПОЧАСОВО // ОФИС АРТЁМА',
+      'НОМЕР 204 // ПОЧАСОВО • КИБЕР-ТАСТАК',
       '#ff2a6d',
       '#fcee0a',
     );
-    this.motelNeonSignMat = this.makeSignMaterial(motelSignTex, 0.78);
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(16, 3.6), this.motelNeonSignMat);
-    sign.position.set(cx, 8.2, cz + 11.2);
+    this.motelNeonSignMat = this.makeSignMaterial(motelSignTex, 0.84);
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(16.2, 3.7), this.motelNeonSignMat);
+    sign.position.set(cx, 7.6, -153.8);
     group.add(sign);
 
-    // Flickering red neon light + warm sleazy amber interior lamp
-    this.motelFlickerLight = new THREE.PointLight(0xff2255, 4.4, 24);
-    this.motelFlickerLight.position.set(cx - 1, 4.8, cz + 3);
-    this.chunks.addToChunk(cx, cz, this.motelFlickerLight);
-
-    const warmSleazyLight = new THREE.PointLight(0xff8c2b, 3.0, 18);
-    warmSleazyLight.position.set(cx + 6.5, 3.6, cz - 4.5);
-    this.chunks.addToChunk(cx, cz, warmSleazyLight);
+    // Pooled light anchors for Motel Room 204 (zero WebGL shader recompiles)
+    this.registerLightAnchor(-161.8, 4.4, -163.5, 0xff2255, 4.4, 24);
+    this.registerLightAnchor(-156.2, 2.8, -161.2, 0xff8c2b, 3.2, 16);
+    this.registerLightAnchor(-171.8, 3.4, -172.0, 0x88f0ff, 3.6, 13);
 
     this.chunks.addToChunk(cx, cz, group);
     this.minimapBuildings.push({
-      minX: cx - 12,
-      maxX: cx + 12,
-      minZ: cz - 11,
-      maxZ: cz + 11,
+      minX: cx - 11.5,
+      maxX: cx + 11.5,
+      minZ: cz - 11.5,
+      maxZ: cz + 11.5,
       color: '#ff2a6d',
     });
   }
@@ -1046,9 +1570,7 @@ export class CyberAlmatyWorld {
     sign.position.set(cx, 7.5, cz - 24);
     group.add(sign);
 
-    const fireLight = new THREE.PointLight(0xff7722, 4.2, 26);
-    fireLight.position.set(cx + 4.5, 2.5, cz - 4);
-    this.chunks.addToChunk(cx, cz, fireLight);
+    this.registerLightAnchor(cx + 4.5, 2.5, cz - 4, 0xff7722, 4.4, 26);
 
     this.chunks.addToChunk(cx, cz, group);
   }
@@ -1287,20 +1809,22 @@ export class CyberAlmatyWorld {
       });
     }
 
-    // Warm fiery orange-red light illuminating the steam cloud & Samir's right shoulder
-    this.rooftopSteamLight = new THREE.PointLight(0xff4a18, 7.2, 16);
-    this.rooftopSteamLight.position.set(-2.75, 1.95, -1.35);
-    diorama.add(this.rooftopSteamLight);
-
-    // Cool cyan skyline rim light catching Samir's chrome cyber-arm and concrete cap
-    const cityRimLight = new THREE.PointLight(0x00d8ff, 3.2, 20);
-    cityRimLight.position.set(2.4, 2.6, -2.5);
-    diorama.add(cityRimLight);
-
-    // Subtle soft fill light from Ai's side so Samir's face/beard/dog-tags read clearly
-    const faceFillLight = new THREE.PointLight(0x88c8e8, 2.2, 10);
-    faceFillLight.position.set(0.5, 2.1, 3.1);
-    diorama.add(faceFillLight);
+    // Pooled light anchors for rooftop steam glow, cyan skyline rim, and Samir face fill (zero PointLights!)
+    const upAxis = new THREE.Vector3(0, 1, 0);
+    const registerDioramaLight = (
+      lx: number,
+      ly: number,
+      lz: number,
+      colorHex: number,
+      intensity: number,
+      distance: number,
+    ) => {
+      const worldPt = new THREE.Vector3(lx, ly, lz).applyAxisAngle(upAxis, Math.PI * 0.25).add(diorama.position);
+      this.registerLightAnchor(worldPt.x, worldPt.y, worldPt.z, colorHex, intensity, distance);
+    };
+    registerDioramaLight(-2.75, 1.95, -1.35, 0xff4a18, 7.2, 16);
+    registerDioramaLight(2.4, 2.6, -2.5, 0x00d8ff, 3.2, 20);
+    registerDioramaLight(0.5, 2.1, 3.1, 0x88c8e8, 2.2, 10);
 
     // SEATED SAMIR on the concrete parapet ledge (directly reconstructed from IMG-20261123-WA0011.jpg)
     this.samirRooftopRig = buildSeatedSamirRooftop();
@@ -1600,9 +2124,9 @@ export class CyberAlmatyWorld {
         this.chunks.addToChunk(pos, side, lamp1);
 
         if (Math.abs(pos) % 80 === 0) {
-          const pt = new THREE.PointLight(side > 0 ? 0x00e5ff : 0xff2a6d, 2.3, 24);
-          pt.position.set(pos, 7.1, side);
-          this.chunks.addToChunk(pos, side, pt);
+          const lampColor = side > 0 ? 0x00e5ff : 0xff2a6d;
+          this.registerLightAnchor(pos, 7.1, side, lampColor, 2.5, 24);
+          this.registerLightAnchor(side, 7.1, pos, lampColor, 2.5, 24);
         }
 
         // Cross boulevard lamp
@@ -1800,10 +2324,10 @@ export class CyberAlmatyWorld {
       {
         id: 'motel_sink',
         label: '[E] УМЫТЬСЯ В ВАННОЙ',
-        x: -172.5,
+        x: -172.6,
         y: 1.2,
-        z: -173.5,
-        radius: 3.2,
+        z: -173.2,
+        radius: 3.4,
         enabled: false,
         category: 'story',
       },
@@ -1868,6 +2392,41 @@ export class CyberAlmatyWorld {
     return this.motelBodyguardRig;
   }
 
+  /**
+   * Positions and poses Artem's massive cyber-bodyguard either intimidatingly beside the motel
+   * bathroom doorway (active=false) or directly face-to-face in front of Ai's bathroom camera
+   * with both armored arms outstretched forward choking Ai's throat (active=true).
+   */
+  setMotelBodyguardChokePose(active: boolean): void {
+    this.motelBodyguardChoking = active;
+    const rig = this.motelBodyguardRig;
+    if (active) {
+      rig.group.visible = true;
+      rig.group.position.set(-170.2, 0.25, -171.6);
+      // Face directly toward Ai/sink at (-171.5, 0.25, -172.6)
+      rig.group.rotation.y = Math.atan2(-171.5 - -170.2, -172.6 - -171.6);
+      rig.leftArm.rotation.set(-1.42, -0.22, -0.14);
+      rig.rightArm.rotation.set(-1.42, 0.22, 0.14);
+      if (rig.leftForearm) rig.leftForearm.rotation.set(-0.2, 0, -0.18);
+      if (rig.rightForearm) rig.rightForearm.rotation.set(-0.2, 0, 0.18);
+      if (rig.torso) rig.torso.rotation.set(0.12, 0, 0);
+      rig.head.rotation.set(0.08, 0, 0);
+    } else {
+      rig.group.position.set(-165.5, 0.25, -169.8);
+      rig.group.rotation.y = 0.08;
+      rig.leftArm.rotation.set(0, 0, 0.06);
+      rig.rightArm.rotation.set(0, 0, -0.06);
+      if (rig.leftForearm) rig.leftForearm.rotation.set(0, 0, 0);
+      if (rig.rightForearm) rig.rightForearm.rotation.set(0, 0, 0);
+      if (rig.torso) rig.torso.rotation.set(0, 0, 0);
+      rig.head.rotation.set(0, 0, 0);
+    }
+  }
+
+  positionMotelBodyguardForChoke(active = true): void {
+    this.setMotelBodyguardChokePose(active);
+  }
+
   setInteractableEnabled(id: string, enabled: boolean): void {
     const it = this.interactables.find((i) => i.id === id);
     if (it) it.enabled = enabled;
@@ -1886,7 +2445,12 @@ export class CyberAlmatyWorld {
     if (opts.artemCorpse !== undefined) this.artemCorpseGroup.visible = opts.artemCorpse;
     if (opts.egorMarum !== undefined) this.egorMarumRig.group.visible = opts.egorMarum;
     if (opts.motelArtem !== undefined) this.motelArtemRig.group.visible = opts.motelArtem;
-    if (opts.motelBodyguard !== undefined) this.motelBodyguardRig.group.visible = opts.motelBodyguard;
+    if (opts.motelBodyguard !== undefined) {
+      this.motelBodyguardRig.group.visible = opts.motelBodyguard;
+      if (!opts.motelBodyguard) {
+        this.setMotelBodyguardChokePose(false);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1908,13 +2472,41 @@ export class CyberAlmatyWorld {
       this.motelArtemRig.head.rotation.y = Math.sin(elapsed * 0.9) * 0.14;
       this.motelArtemRig.rightArm.rotation.x = -0.32 + Math.sin(elapsed * 1.4) * 0.04;
     }
+    if (this.motelBodyguardRig.group.visible) {
+      if (this.motelBodyguardChoking) {
+        // Violent choke struggle shaking directly in front of Ai's bathroom camera
+        const rig = this.motelBodyguardRig;
+        rig.group.position.set(
+          -170.2 + Math.sin(elapsed * 34.0) * 0.035,
+          0.25 + Math.cos(elapsed * 41.0) * 0.018,
+          -171.6 + Math.sin(elapsed * 29.0) * 0.03,
+        );
+        rig.leftArm.rotation.set(
+          -1.42 + Math.sin(elapsed * 32.0) * 0.08,
+          -0.22 + Math.sin(elapsed * 26.0) * 0.06,
+          -0.14 + Math.cos(elapsed * 30.0) * 0.05,
+        );
+        rig.rightArm.rotation.set(
+          -1.42 + Math.cos(elapsed * 35.0) * 0.08,
+          0.22 - Math.sin(elapsed * 26.0) * 0.06,
+          0.14 - Math.cos(elapsed * 30.0) * 0.05,
+        );
+        if (rig.torso) {
+          rig.torso.rotation.x = 0.12 + Math.sin(elapsed * 28.0) * 0.05;
+          rig.torso.rotation.z = Math.sin(elapsed * 23.0) * 0.04;
+        }
+        rig.head.rotation.set(0.08 + Math.sin(elapsed * 19.0) * 0.04, Math.sin(elapsed * 24.0) * 0.08, 0);
+      } else {
+        this.motelBodyguardRig.head.rotation.y = Math.sin(elapsed * 0.75) * 0.18;
+      }
+    }
 
     // 2. Floating Marum hologram sign
     for (const s of this.hologramSigns) {
       s.mesh.position.y = s.baseY + Math.sin(elapsed * 2.1) * 0.08;
     }
 
-    // 3. Rooftop billowing orange-red steam puffs & flickering warm light
+    // 3. Rooftop billowing orange-red steam puffs
     for (const p of this.steamPuffs) {
       const t = (p.phase + elapsed * p.speed) % 1;
       const fadeIn = Math.min(1, t * 4.2);
@@ -1929,17 +2521,21 @@ export class CyberAlmatyWorld {
       p.mesh.rotation.z = (p.phase * 6.28) + t * 0.9;
       p.mat.opacity = fadeIn * fadeOut * 0.44;
     }
-    if (this.rooftopSteamLight) {
-      this.rooftopSteamLight.intensity = 6.8 + Math.sin(elapsed * 6.5) * 0.8 + Math.sin(elapsed * 15.3) * 0.35;
-    }
 
-    // 4. Sleazy Motel flickering red neon sign & interior bulb
+    // 4. Sleazy Motel flickering red neon sign, bathroom fluorescent tube & CRT wall TV
     const buzz = Math.sin(elapsed * 29.0) * Math.sin(elapsed * 7.3) > 0.74 ? 0.28 : 1.0;
     if (this.motelNeonSignMat) {
-      this.motelNeonSignMat.emissiveIntensity = 0.78 * buzz;
+      this.motelNeonSignMat.emissiveIntensity = 0.84 * buzz;
     }
-    if (this.motelFlickerLight) {
-      this.motelFlickerLight.intensity = 4.4 * (buzz < 0.5 ? 0.45 : 1.0);
+    if (this.motelBedNeonMat) {
+      this.motelBedNeonMat.emissiveIntensity = 1.65 * (buzz < 0.5 ? 0.52 : 1.0);
+    }
+    if (this.motelBathTubeMat) {
+      const bathFlicker = Math.sin(elapsed * 37.0) * Math.sin(elapsed * 11.7) > 0.78 ? 0.32 : 1.0;
+      this.motelBathTubeMat.emissiveIntensity = 1.85 * bathFlicker;
+    }
+    if (this.motelTvMat) {
+      this.motelTvMat.emissiveIntensity = 0.86 + Math.sin(elapsed * 19.0) * 0.1 + Math.sin(elapsed * 43.0) * 0.05;
     }
 
     // 5. Blinking rooftop aviation beacons

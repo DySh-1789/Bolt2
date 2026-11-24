@@ -226,9 +226,19 @@ export class VehicleSystem {
       this.nitroFlames.push(flame);
     }
 
-    // Underglow strip
-    const underglow = new THREE.PointLight(0x00f0ff, 2.6, 10);
-    underglow.position.set(0, 0.4, 0);
+    // Neon cyan underglow plate (zero PointLight shader churn)
+    const underglow = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.35, 4.9),
+      new THREE.MeshBasicMaterial({
+        color: 0x00f0ff,
+        transparent: true,
+        opacity: 0.42,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    underglow.rotation.x = -Math.PI / 2;
+    underglow.position.set(0, 0.08, 0);
     this.group.add(underglow);
 
     // 4 wheels

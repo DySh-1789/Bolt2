@@ -215,25 +215,24 @@ export class Engine {
       antialias: true,
       powerPreference: 'high-performance',
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.setSize(width, height);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.04;
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.enabled = false;
     container.appendChild(this.renderer.domElement);
 
     // Rich Cyberpunk PMREM IBL environment map for metallic chrome, wet asphalt & armor reflections
     this.envRenderTarget = this.createCyberpunkEnvironment();
     this.scene.environment = this.envRenderTarget.texture;
-    this.scene.environmentIntensity = 0.48;
+    this.scene.environmentIntensity = 0.52;
 
     // Post-processing pipeline: Render (linear) -> Bloom (HDR linear) -> OutputPass (ACES + sRGB) -> CyberpunkPostShader
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
 
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), 0.36, 0.42, 0.88);
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(width, height), 0.34, 0.4, 0.88);
     this.composer.addPass(this.bloomPass);
 
     this.outputPass = new OutputPass();
@@ -298,19 +297,34 @@ export class Engine {
     const height = Math.max(this.container.clientHeight, window.innerHeight, 1);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.setSize(width, height);
     this.composer.setSize(width, height);
     this.bloomPass.setSize(width, height);
   };
 
   setAtmosphere(bgHex: number, fogHex: number, fogDensity: number): void {
-    this.scene.background = new THREE.Color(bgHex);
-    this.scene.fog = new THREE.FogExp2(fogHex, fogDensity);
+    if (this.scene.background instanceof THREE.Color) {
+      this.scene.background.setHex(bgHex);
+    } else {
+      this.scene.background = new THREE.Color(bgHex);
+    }
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      this.scene.fog.color.setHex(fogHex);
+      this.scene.fog.density = fogDensity;
+    } else {
+      this.scene.fog = new THREE.FogExp2(fogHex, fogDensity);
+    }
   }
 
   /** Bolt 1 compatibility helper for dynamic fog density transitions. */
   setFogDensity(density: number, colorHex = 0x070914): void {
-    this.scene.fog = new THREE.FogExp2(colorHex, density);
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      this.scene.fog.color.setHex(colorHex);
+      this.scene.fog.density = density;
+    } else {
+      this.scene.fog = new THREE.FogExp2(colorHex, density);
+    }
   }
 
   render(dt: number, fx: EnginePostFxInput): void {
@@ -342,7 +356,7 @@ export class Engine {
     u.uChromaticBoost.value = chromaticBoost;
     u.uLetterbox.value = letterbox;
 
-    this.bloomPass.strength = 0.36 + cyberspace * 0.42 + soulkiller * 0.52 + sandevistan * 0.16;
+    this.bloomPass.strength = 0.34 + cyberspace * 0.42 + soulkiller * 0.52 + sandevistan * 0.16;
     this.composer.render();
   }
 

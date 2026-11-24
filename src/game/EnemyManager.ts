@@ -75,14 +75,47 @@ const ARCHETYPE_STATS: Record<
 };
 
 export class EnemyManager {
+  private static readonly MAX_SPARKS = 60;
+  private static readonly MAX_BULLETS = 45;
+
   private enemies: EnemyInstance[] = [];
   private bullets: EnemyBullet[] = [];
   private sparks: Spark[] = [];
   private scene: THREE.Scene;
   private raycaster = new THREE.Raycaster();
 
+  // Shared geometries & cached materials to eliminate per-shot / per-spark GPU & GC leaks
+  private bulletGeo = new THREE.SphereGeometry(0.09, 6, 6);
+  private heavyBulletGeo = new THREE.SphereGeometry(0.14, 6, 6);
+  private sparkGeo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
+  private basicMatCache = new Map<number, THREE.MeshBasicMaterial>();
+  private tmpNextPos = new THREE.Vector3();
+  private tmpStepDir = new THREE.Vector3();
+
   constructor(scene: THREE.Scene) {
     this.scene = scene;
+  }
+
+  private getCachedBasicMaterial(colorHex: number): THREE.MeshBasicMaterial {
+    let mat = this.basicMatCache.get(colorHex);
+    if (!mat) {
+      mat = new THREE.MeshBasicMaterial({ color: colorHex });
+      this.basicMatCache.set(colorHex, mat);
+    }
+    return mat;
+  }
+
+  private disposeEnemy(enemy: EnemyInstance): void {
+    this.scene.remove(enemy.group);
+    enemy.group.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry.dispose();
+      }
+    });
+    const bodyMat = enemy.bodyHitbox.material;
+    if (bodyMat instanceof THREE.MeshStandardMaterial) {
+      bodyMat.dispose();
+    }
   }
 
   spawnWave(configs: EnemySpawnConfig[]): void {
@@ -102,21 +135,22 @@ export class EnemyManager {
       roughness: 0.45,
       metalness: 0.6,
     });
-    const accentMat = new THREE.MeshBasicMaterial({ color: spec.accent });
+    const accentMat = this.getCachedBasicMaterial(spec.accent);
 
     let bodyHitbox: THREE.Mesh;
     let headHitbox: THREE.Mesh;
 
     if (cfg.archetype === 'drone') {
-      const hull = new THREE.Mesh(new THREE.OctahedronGeometry(0.55, 1), armorMat);
+      // Generous OctahedronGeometry(0.75, 1) hull + prominent glowing eye so taxi-chase hits feel snappy & fair
+      const hull = new THREE.Mesh(new THREE.OctahedronGeometry(0.75, 1), armorMat);
       hull.position.y = 2.4;
       group.add(hull);
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), accentMat);
-      eye.position.set(0, 2.4, 0.45);
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8), accentMat);
+      eye.position.set(0, 2.4, 0.65);
       group.add(eye);
-      const rotor = new THREE.Mesh(new THREE.TorusGeometry(0.75, 0.05, 6, 16), accentMat);
+      const rotor = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.06, 6, 16), accentMat);
       rotor.rotation.x = Math.PI / 2;
-      rotor.position.y = 2.7;
+      rotor.position.y = 2.85;
       group.add(rotor);
 
       bodyHitbox = hull;
@@ -207,7 +241,7 @@ export class EnemyManager {
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
       if (!zoneId || e.zoneId === zoneId) {
-        this.scene.remove(e.group);
+        this.disposeEnemy(e);
         this.enemies.splice(i, 1);
       }
     }
@@ -216,6 +250,10 @@ export class EnemyManager {
         this.scene.remove(b.mesh);
       }
       this.bullets = [];
+      for (const s of this.sparks) {
+        this.scene.remove(s.mesh);
+      }
+      this.sparks = [];
     }
   }
 
@@ -367,10 +405,25 @@ export class EnemyManager {
   }
 
   spawnSparks(point: THREE.Vector3, count: number, colorHex: number): void {
-    const mat = new THREE.MeshBasicMaterial({ color: colorHex });
-    const geo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
+    const mat = this.getCachedBasicMaterial(colorHex);
     for (let i = 0; i < count; i++) {
-      const m = new THREE.Mesh(geo, mat);
+      if (this.sparks.length >= EnemyManager.MAX_SPARKS) {
+        const recycled = this.sparks.shift();
+        if (recycled) {
+          recycled.mesh.material = mat;
+          recycled.mesh.position.copy(point);
+          recycled.velocity.set(
+            (Math.random() - 0.5) * 8,
+            2 + Math.random() * 5,
+            (Math.random() - 0.5) * 8,
+          );
+          recycled.life = 0.35 + Math.random() * 0.2;
+          this.sparks.push(recycled);
+          continue;
+        }
+      }
+
+      const m = new THREE.Mesh(this.sparkGeo, mat);
       m.position.copy(point);
       this.scene.add(m);
       this.sparks.push({
@@ -393,8 +446,16 @@ export class EnemyManager {
     callbacks: {
       onEnemyShot: (heavy: boolean) => void;
       onPlayerHit: (damage: number) => void;
+      damageScale?: number;
+      chaseDamageScale?: number;
     },
+    chaseDamageScale?: number,
   ): void {
+    const effectiveDamageScale = Math.max(
+      0,
+      chaseDamageScale ?? callbacks.damageScale ?? callbacks.chaseDamageScale ?? 1,
+    );
+
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
       if (!e.alive) {
@@ -402,7 +463,7 @@ export class EnemyManager {
         e.group.rotation.x = Math.min(Math.PI / 2, e.group.rotation.x + dt * 5.2);
         e.group.position.y -= dt * 0.45;
         if (e.deathTimer <= 0) {
-          this.scene.remove(e.group);
+          this.disposeEnemy(e);
           this.enemies.splice(i, 1);
         }
         continue;
@@ -422,9 +483,11 @@ export class EnemyManager {
       // Hit flash visual feedback
       if (e.flashTimer > 0) {
         e.flashTimer = Math.max(0, e.flashTimer - dt);
-        const bodyMat = e.bodyHitbox.material as THREE.MeshStandardMaterial;
-        bodyMat.emissive.setHex(e.flashTimer > 0 ? 0xff3355 : 0x000000);
-        bodyMat.emissiveIntensity = e.flashTimer > 0 ? 1.2 : 0;
+        const bodyMat = e.bodyHitbox.material;
+        if (bodyMat instanceof THREE.MeshStandardMaterial) {
+          bodyMat.emissive.setHex(e.flashTimer > 0 ? 0xff3355 : 0x000000);
+          bodyMat.emissiveIntensity = e.flashTimer > 0 ? 1.2 : 0;
+        }
       }
 
       // Movement & strafing
@@ -481,10 +544,17 @@ export class EnemyManager {
             playerEye.z - muzzle.z + (Math.random() - 0.5) * 0.9,
           ).normalize();
 
-          const bulletMesh = new THREE.Mesh(
-            new THREE.SphereGeometry(e.archetype === 'heavy' ? 0.14 : 0.09, 6, 6),
-            new THREE.MeshBasicMaterial({ color: spec.accent }),
-          );
+          const bulletGeo = e.archetype === 'heavy' ? this.heavyBulletGeo : this.bulletGeo;
+          const bulletMat = this.getCachedBasicMaterial(spec.accent);
+
+          while (this.bullets.length >= EnemyManager.MAX_BULLETS) {
+            const oldest = this.bullets.shift();
+            if (oldest) {
+              this.scene.remove(oldest.mesh);
+            }
+          }
+
+          const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
           bulletMesh.position.set(muzzle.x, muzzle.y, muzzle.z);
           this.scene.add(bulletMesh);
 
@@ -504,25 +574,32 @@ export class EnemyManager {
     for (let i = this.bullets.length - 1; i >= 0; i--) {
       const b = this.bullets[i];
       b.life -= dt;
-      const nextPos = b.mesh.position.clone().addScaledVector(b.velocity, dt);
-      const stepDist = b.mesh.position.distanceTo(nextPos);
-      const stepDir = nextPos.clone().sub(b.mesh.position).normalize();
+      this.tmpNextPos.copy(b.mesh.position).addScaledVector(b.velocity, dt);
+      const stepDist = b.mesh.position.distanceTo(this.tmpNextPos);
+      this.tmpStepDir.copy(this.tmpNextPos).sub(b.mesh.position);
+      if (stepDist > 1e-6) {
+        this.tmpStepDir.divideScalar(stepDist);
+      } else {
+        this.tmpStepDir.set(0, 0, -1);
+      }
 
-      const wallHit = physics.raycastBullets(b.mesh.position, stepDir, stepDist);
+      const wallHit = physics.raycastBullets(b.mesh.position, this.tmpStepDir, stepDist);
       const hitPlayer =
-        Math.hypot(nextPos.x - playerPos.x, nextPos.z - playerPos.z) < 0.72 &&
-        nextPos.y >= playerPos.y &&
-        nextPos.y <= playerPos.y + 1.95;
+        Math.hypot(this.tmpNextPos.x - playerPos.x, this.tmpNextPos.z - playerPos.z) < 0.72 &&
+        this.tmpNextPos.y >= playerPos.y &&
+        this.tmpNextPos.y <= playerPos.y + 1.95;
 
       if (hitPlayer) {
-        callbacks.onPlayerHit(b.damage);
+        const scaledDamage =
+          effectiveDamageScale <= 0 ? 0 : Math.max(1, Math.round(b.damage * effectiveDamageScale));
+        callbacks.onPlayerHit(scaledDamage);
         this.scene.remove(b.mesh);
         this.bullets.splice(i, 1);
       } else if (wallHit.hit || b.life <= 0) {
         this.scene.remove(b.mesh);
         this.bullets.splice(i, 1);
       } else {
-        b.mesh.position.copy(nextPos);
+        b.mesh.position.copy(this.tmpNextPos);
       }
     }
 
