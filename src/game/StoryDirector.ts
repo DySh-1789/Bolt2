@@ -137,6 +137,7 @@ export class StoryDirector {
   private ecgBeatTimer = 0;
   private chokeBeatTimer = 0;
   private targetLetterbox = 0;
+  private pendingDeathRespawn = false;
 
   constructor(engine: Engine, viewport: HTMLElement) {
     this.engine = engine;
@@ -1572,6 +1573,7 @@ export class StoryDirector {
   }
 
   private handlePlayerDamaged(amount: number, shake = 0.1): void {
+    if (this.pendingDeathRespawn) return;
     // Cyber-Akhmed's armored chassis and motel betrayal sequence prevent unfair mid-cutscene softlocks
     const allowLethal =
       this.stateMachine.act !== 'TASTAK_BETRAYAL' && this.stateMachine.act !== 'FLASHBACK_CHASE';
@@ -1583,8 +1585,8 @@ export class StoryDirector {
     }
     if (res.died) {
       this.stats.deaths++;
+      this.pendingDeathRespawn = true;
       this.hud.showActBanner('КРИТИЧЕСКИЙ СБОЙ // ОТКАТ К ЧЕКПОИНТУ', 3.0);
-      this.restartFromCheckpoint();
     }
   }
 
@@ -2098,7 +2100,19 @@ export class StoryDirector {
     });
 
     // Story & world tick (pass player.position for 3D Cyber-Rain!)
-    this.updateActLogic(dt, worldDt, input);
+    if (!this.pendingDeathRespawn) {
+      this.updateActLogic(dt, worldDt, input);
+    }
+
+    // Execute deferred respawn cleanly outside all projectile/enemy iteration loops
+    if (this.pendingDeathRespawn) {
+      this.pendingDeathRespawn = false;
+      this.input.clearTransient();
+      this.restartFromCheckpoint();
+      this.engine.render(dt, this.fx);
+      return;
+    }
+
     this.city.update(this.elapsedTotal, this.player.position);
     this.instances.update(worldDt, this.elapsedTotal);
 

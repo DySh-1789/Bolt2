@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import * as THREE from 'three';
+import { PhysicsWorld } from '../src/engine/Physics';
+import { EnemyManager } from '../src/game/EnemyManager';
 import { RikhardSmasherState } from '../src/game/RikhardSmasherBoss';
 import { StoryStateMachine } from '../src/game/StoryDirector';
 import { ElevatorState } from '../src/game/ElevatorSystem';
@@ -80,5 +83,42 @@ describe('ElevatorState', () => {
     expect(arrived).toBe(true);
     expect(elev.currentY).toBe(-24);
     expect(elev.displayFloor).toBe(-12);
+  });
+});
+
+describe('EnemyManager death re-entrancy safety', () => {
+  it('never crashes when onPlayerHit kills the player and calls clearZone() while multiple bullets are in flight', () => {
+    const scene = new THREE.Scene();
+    const physics = new PhysicsWorld();
+    const mgr = new EnemyManager(scene);
+
+    // Spawn 3 guards at close range so multiple bullets are simultaneously in flight
+    mgr.spawnWave([
+      { id: 'g1', archetype: 'guard', zoneId: 'test', x: 0, y: 0, z: -4 },
+      { id: 'g2', archetype: 'guard', zoneId: 'test', x: 0.5, y: 0, z: -4 },
+      { id: 'g3', archetype: 'guard', zoneId: 'test', x: -0.5, y: 0, z: -4 },
+    ]);
+
+    let hits = 0;
+    expect(() => {
+      for (let step = 0; step < 60; step++) {
+        mgr.update(
+          0.05,
+          { x: 0, y: 0, z: 0 },
+          { x: 0, y: 1.68, z: 0 },
+          physics,
+          {
+            onEnemyShot: () => {},
+            onPlayerHit: () => {
+              hits++;
+              // Simulate lethal respawn clearing enemies & bullets synchronously mid-loop
+              mgr.clearZone();
+            },
+          },
+        );
+      }
+    }).not.toThrow();
+
+    expect(hits).toBeGreaterThan(0);
   });
 });

@@ -910,7 +910,13 @@ export class RikhardSmasherBoss {
     callbacks: SmasherCallbacks,
   ): void {
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      if (i >= this.projectiles.length) {
+        i = this.projectiles.length;
+        continue;
+      }
       const p = this.projectiles[i];
+      if (!p) continue;
+
       p.life -= dt;
       const next = p.mesh.position.clone().addScaledVector(p.velocity, dt);
       const wall = physics.raycastBullets(p.mesh.position, p.velocity.clone().normalize(), p.mesh.position.distanceTo(next));
@@ -920,9 +926,10 @@ export class RikhardSmasherBoss {
         next.y <= playerPos.y + 2.0;
 
       if (hitP) {
-        callbacks.onPlayerDamaged(p.damage, 0.14);
+        const dmg = p.damage;
         this.scene.remove(p.mesh);
         this.projectiles.splice(i, 1);
+        callbacks.onPlayerDamaged(dmg, 0.14);
       } else if (wall.hit || p.life <= 0) {
         this.scene.remove(p.mesh);
         this.projectiles.splice(i, 1);
@@ -932,42 +939,60 @@ export class RikhardSmasherBoss {
     }
 
     for (let i = this.missiles.length - 1; i >= 0; i--) {
+      if (i >= this.missiles.length) {
+        i = this.missiles.length;
+        continue;
+      }
       const m = this.missiles[i];
+      if (!m) continue;
+
       m.timer -= dt;
       const t = 1 - Math.max(0, m.timer / m.maxTimer);
       m.missile.position.lerpVectors(m.startPos, m.targetPos, t);
       m.missile.position.y += Math.sin(t * Math.PI) * 6.5;
 
       if (m.timer <= 0) {
-        callbacks.onMissileExplode();
-        if (Math.hypot(playerPos.x - m.targetPos.x, playerPos.z - m.targetPos.z) < 3.4) {
-          callbacks.onPlayerDamaged(24, 0.28);
-        }
+        const hitDist = Math.hypot(playerPos.x - m.targetPos.x, playerPos.z - m.targetPos.z);
         this.scene.remove(m.ring);
         this.scene.remove(m.missile);
         this.missiles.splice(i, 1);
+        callbacks.onMissileExplode();
+        if (hitDist < 3.4) {
+          callbacks.onPlayerDamaged(24, 0.28);
+        }
       }
     }
 
     for (let i = this.shockwaves.length - 1; i >= 0; i--) {
+      if (i >= this.shockwaves.length) {
+        i = this.shockwaves.length;
+        continue;
+      }
       const sw = this.shockwaves[i];
+      if (!sw) continue;
+
       const prevR = sw.radius;
       sw.radius += dt * 13.5;
       sw.mesh.scale.setScalar(sw.radius / 1.4);
       (sw.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - sw.radius / sw.maxRadius);
 
+      let hitShockwave = false;
       if (!sw.damagedPlayer) {
         const d = Math.hypot(playerPos.x - sw.mesh.position.x, playerPos.z - sw.mesh.position.z);
         const groundedNear = playerPos.y - this.arenaFloorY < 0.95;
         if (d >= prevR - 0.8 && d <= sw.radius + 0.8 && groundedNear) {
           sw.damagedPlayer = true;
-          callbacks.onPlayerDamaged(18, 0.22);
+          hitShockwave = true;
         }
       }
 
       if (sw.radius >= sw.maxRadius) {
         this.scene.remove(sw.mesh);
         this.shockwaves.splice(i, 1);
+      }
+
+      if (hitShockwave) {
+        callbacks.onPlayerDamaged(18, 0.22);
       }
     }
 

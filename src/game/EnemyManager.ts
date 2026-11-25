@@ -570,9 +570,15 @@ export class EnemyManager {
       }
     }
 
-    // Update enemy projectiles
+    // Update enemy projectiles (remove bullet before callback & guard bounds against re-entrant clearZone)
     for (let i = this.bullets.length - 1; i >= 0; i--) {
+      if (i >= this.bullets.length) {
+        i = this.bullets.length;
+        continue;
+      }
       const b = this.bullets[i];
+      if (!b) continue;
+
       b.life -= dt;
       this.tmpNextPos.copy(b.mesh.position).addScaledVector(b.velocity, dt);
       const stepDist = b.mesh.position.distanceTo(this.tmpNextPos);
@@ -592,9 +598,9 @@ export class EnemyManager {
       if (hitPlayer) {
         const scaledDamage =
           effectiveDamageScale <= 0 ? 0 : Math.max(1, Math.round(b.damage * effectiveDamageScale));
-        callbacks.onPlayerHit(scaledDamage);
         this.scene.remove(b.mesh);
         this.bullets.splice(i, 1);
+        callbacks.onPlayerHit(scaledDamage);
       } else if (wallHit.hit || b.life <= 0) {
         this.scene.remove(b.mesh);
         this.bullets.splice(i, 1);
@@ -606,6 +612,7 @@ export class EnemyManager {
     // Update sparks
     for (let i = this.sparks.length - 1; i >= 0; i--) {
       const s = this.sparks[i];
+      if (!s) continue;
       s.life -= dt;
       s.velocity.y -= 15 * dt;
       s.mesh.position.addScaledVector(s.velocity, dt);
