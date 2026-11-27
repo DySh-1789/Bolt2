@@ -8,6 +8,7 @@ import {
   buildRodionModel,
   buildSamirHologram,
   buildSanzharModel,
+  buildSeatedSanzharTaxi,
   buildTaisiyaCyberspaceModel,
   type CharacterRig,
 } from './CharacterModels';
@@ -95,6 +96,8 @@ export class StoryInstances {
   readonly biochipCase = new THREE.Group();
   readonly penthouseElevator: ElevatorRig;
   private penthouseSanzharMode: PenthouseSanzharMode = 'room';
+  private penthouseCorridorLocked = true;
+  private phCorridorDoorMesh: THREE.Group | null = null;
   private penthouseAvs: PenthouseAv[] = [];
   private penthouseHoloRing: THREE.Mesh | null = null;
   private penthouseSmasherLeftArm: THREE.Group | null = null;
@@ -205,7 +208,8 @@ export class StoryInstances {
     scene.add(this.penthouseGroup);
 
     // 2. Build Chase Track & Unobstructed Cyber-Akhmed Interior (Y = 220)
-    this.chaseSanzhar = buildSanzharModel();
+    this.chaseSanzhar = buildSeatedSanzharTaxi();
+    this.chaseSanzhar.setBiochipVisible?.(false);
     this.buildChaseTrack();
     scene.add(this.chaseGroup);
 
@@ -249,15 +253,40 @@ export class StoryInstances {
     this.setActiveInstance('NONE');
   }
 
+  setPenthouseCorridorLocked(locked: boolean): void {
+    this.penthouseCorridorLocked = locked;
+    if (this.phCorridorDoorMesh) {
+      this.phCorridorDoorMesh.visible = locked;
+    }
+    this.physics.setActive('ph_corridor_lock', locked && this.activeInstance === 'PENTHOUSE');
+  }
+
   setActiveInstance(name: StoryInstanceName): void {
     this.activeInstance = name;
-    this.penthouseGroup.visible = name === 'PENTHOUSE';
+    const isPh = name === 'PENTHOUSE';
+    const isUg = name === 'UNDERGROUND';
+    const isCyb = name === 'CYBERSPACE';
+
+    this.penthouseGroup.visible = isPh;
     this.chaseGroup.visible = name === 'CHASE';
-    this.undergroundGroup.visible = name === 'UNDERGROUND';
-    this.cyberspaceGroup.visible = name === 'CYBERSPACE';
+    this.undergroundGroup.visible = isUg;
+    this.cyberspaceGroup.visible = isCyb;
     this.taldykorganGroup.visible = name === 'TALDYKORGAN';
 
-    if (name === 'PENTHOUSE') {
+    // Keep inactive instance colliders disabled so they cannot interfere with physics/raycasts
+    this.physics.setCollidersActiveByPrefix('ph_', isPh);
+    this.physics.setActive('ph_corridor_lock', isPh && this.penthouseCorridorLocked);
+    this.penthouseElevator.setCollidersActive(isPh);
+
+    this.physics.setCollidersActiveByPrefix('ug_', isUg);
+    this.physics.setCollidersActiveByPrefix('boss_', isUg);
+    this.physics.setCollidersActiveByPrefix('huyeshi_', isUg);
+    this.physics.setCollidersActiveByPrefix('tower_supply_', isUg);
+    this.undergroundElevator.setCollidersActive(isUg);
+
+    this.physics.setCollidersActiveByPrefix('cyb_', isCyb);
+
+    if (isPh) {
       this.setPenthouseSanzharState('room');
     }
 
@@ -1104,6 +1133,7 @@ export class StoryInstances {
     );
     suiteCeil.position.set(0, y + 6.4, 8.0);
     this.penthouseGroup.add(suiteCeil);
+    this.physics.addBox('ph_suite_ceil', 0, y + 6.4, 8.0, 25.6, 0.4, 19.6);
 
     // --- LUXURY HOTEL CORRIDOR FLOOR & CEILING (Z: -35.8 .. -1.5, X: -9.4 .. 9.4) ---
     const corrFloor = new THREE.Mesh(new THREE.BoxGeometry(19.2, 0.4, 34.6), marbleFloorMat);
@@ -1116,6 +1146,7 @@ export class StoryInstances {
     );
     corrCeil.position.set(0, y + 6.4, -18.6);
     this.penthouseGroup.add(corrCeil);
+    this.physics.addBox('ph_corr_ceil', 0, y + 6.4, -18.6, 19.2, 0.4, 34.6);
 
     // Helper for full-height structural walls
     const addW = (
@@ -1146,6 +1177,20 @@ export class StoryInstances {
     this.penthouseGroup.add(divHeader);
     this.addNeonStrip(this.penthouseGroup, 0, y + 4.02, -1.08, 5.1, 0.08, 0.08, 0xfcee0a, 1.6);
     this.addNeonStrip(this.penthouseGroup, 0, y + 4.02, -1.92, 5.1, 0.08, 0.08, 0xfcee0a, 1.6);
+
+    // Suite 9201 security doors locking corridor until heist escape begins (subStep = 3)
+    const lockDoorGroup = new THREE.Group();
+    const lockDoorPanel = new THREE.Mesh(new THREE.BoxGeometry(5.05, 4.0, 0.28), mahoganyMat);
+    lockDoorPanel.position.set(0, y + 2.0, -1.5);
+    const lockDoorSeam = new THREE.Mesh(new THREE.BoxGeometry(0.12, 3.8, 0.34), brushedGoldMat);
+    lockDoorSeam.position.set(0, y + 2.0, -1.5);
+    this.addNeonStrip(lockDoorGroup, 0, y + 2.0, -1.32, 4.8, 0.07, 0.04, 0xff003c, 1.5);
+    lockDoorGroup.add(lockDoorPanel, lockDoorSeam);
+    this.phCorridorDoorMesh = lockDoorGroup;
+    this.penthouseGroup.add(lockDoorGroup);
+    this.physics.addBox('ph_corridor_lock', 0, y + 2.0, -1.5, 5.2, 4.0, 0.65, {
+      active: this.penthouseCorridorLocked,
+    });
 
     // Luxury Hotel Corridor Side Walls (X = ±9.2, Z: -35.8 .. -1.5)
     addW('ph_corr_w', -9.2, -18.65, 0.8, 34.8);
@@ -1450,9 +1495,10 @@ export class StoryInstances {
     this.addNeonStrip(closetGroup, 1.42, 1.67, 1.98, 0.04, 3.1, 0.04, 0xfcee0a, 1.25);
     this.penthouseGroup.add(closetGroup);
 
-    // Thin outer North/South colliders only (interior stays 100% open for Ai + Sanzhar!)
+    // Thin outer North/South colliders & ceiling (interior stays 100% open for Ai + Sanzhar!)
     this.physics.addBox('ph_closet_n', -10.15, y + 1.7, 5.02, 2.75, 3.4, 0.22);
     this.physics.addBox('ph_closet_s', -10.15, y + 1.7, 9.18, 2.75, 3.4, 0.22);
+    this.physics.addBox('ph_closet_ceil', -10.15, y + 3.45, 7.1, 2.8, 0.25, 4.3);
 
     // --- BIOCHIP RELIC PEDESTAL & GLOWING CASE AT (0, y, 6) ---
     const pedestal = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.1, 1.7), darkMarbleMat);
@@ -2093,20 +2139,26 @@ export class StoryInstances {
     rearRollBar.position.set(0.12, 2.75, 0.65);
     cabin.add(rearRollBar);
 
-    // Passenger seat backrest behind Sanzhar
+    // Passenger seat cushion & backrest for seated Sanzhar
+    const seatCushion = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.18, 0.62), leatherMat);
+    seatCushion.position.set(0.94, 1.08, -0.18);
     const seatBack = new THREE.Mesh(new THREE.BoxGeometry(0.68, 1.15, 0.16), leatherMat);
     seatBack.position.set(0.94, 1.62, 0.14);
     seatBack.rotation.x = -0.12;
-    cabin.add(seatBack);
+    cabin.add(seatCushion, seatBack);
 
-    // --- SANZHAR CLEARLY VISIBLE IN THE RIGHT PASSENGER SEAT ---
-    this.chaseSanzhar.group.position.set(0.94, 0.56, -0.34);
-    this.chaseSanzhar.group.rotation.y = Math.PI * 0.82;
-    this.chaseSanzhar.leftArm.rotation.set(-0.55, 0, -0.15);
-    this.chaseSanzhar.rightArm.rotation.set(-0.65, 0, 0.15);
+    // --- SEATED SANZHAR CLEARLY VISIBLE IN THE RIGHT PASSENGER SEAT ---
+    this.chaseSanzhar.group.position.set(0.94, 1.18, -0.22);
+    this.chaseSanzhar.group.rotation.set(0, Math.PI * 0.88, 0);
+    if (this.chaseSanzhar.torso) {
+      this.chaseSanzhar.torso.rotation.set(-0.04, -0.18, 0);
+    }
+    this.chaseSanzhar.head.rotation.set(0.04, -0.15, 0);
+    this.chaseSanzhar.leftArm.rotation.set(-0.55, -0.15, -0.12);
+    this.chaseSanzhar.rightArm.rotation.set(-0.48, 0.1, 0.15);
 
     const woundMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.28, 0.26, 0.07),
+      new THREE.BoxGeometry(0.26, 0.24, 0.04),
       new THREE.MeshStandardMaterial({
         color: 0xaa001a,
         emissive: 0xff0028,
@@ -2114,10 +2166,10 @@ export class StoryInstances {
         roughness: 0.35,
       }),
     );
-    woundMesh.position.set(0.08, 1.12, 0.17);
+    woundMesh.position.set(-0.07, 0.19, 0.175);
     woundMesh.visible = false;
     this.chaseSanzharWoundMesh = woundMesh;
-    this.chaseSanzhar.group.add(woundMesh);
+    (this.chaseSanzhar.torso ?? this.chaseSanzhar.group).add(woundMesh);
     cabin.add(this.chaseSanzhar.group);
 
     // Glowing blue Relic Biochip prop that animates from Sanzhar toward Ai's neural slot
@@ -2148,6 +2200,7 @@ export class StoryInstances {
   setChaseBiochipVisible(visible: boolean): void {
     this.chaseBiochipVisible = visible;
     this.chaseBiochip.visible = visible;
+    this.chaseSanzhar.setBiochipVisible?.(false);
     if (visible) {
       this.chaseBiochipProgress = 0;
       this.chaseBiochip.position.set(0.62, 1.84, -0.46);
@@ -2160,17 +2213,23 @@ export class StoryInstances {
       this.chaseSanzharWoundMesh.visible = wounded;
     }
     if (wounded) {
-      this.chaseSanzhar.group.position.set(0.86, 0.48, -0.3);
-      this.chaseSanzhar.group.rotation.set(0.12, Math.PI * 0.7, 0.16);
-      this.chaseSanzhar.head.rotation.set(0.26, 0.34, 0.18);
-      this.chaseSanzhar.leftArm.rotation.set(-0.95, 0, -0.45);
-      this.chaseSanzhar.rightArm.rotation.set(-1.15, 0.25, 0.25);
+      this.chaseSanzhar.group.position.set(0.88, 1.12, -0.22);
+      this.chaseSanzhar.group.rotation.set(0.06, Math.PI * 0.82, 0.08);
+      if (this.chaseSanzhar.torso) {
+        this.chaseSanzhar.torso.rotation.set(-0.14, -0.25, -0.09);
+      }
+      this.chaseSanzhar.head.rotation.set(0.24, -0.26, -0.14);
+      this.chaseSanzhar.leftArm.rotation.set(-1.05, -0.35, -0.12);
+      this.chaseSanzhar.rightArm.rotation.set(-0.48, 0.2, 0.24);
     } else {
-      this.chaseSanzhar.group.position.set(0.94, 0.56, -0.34);
-      this.chaseSanzhar.group.rotation.set(0, Math.PI * 0.82, 0);
-      this.chaseSanzhar.head.rotation.set(0, 0, 0);
-      this.chaseSanzhar.leftArm.rotation.set(-0.55, 0, -0.15);
-      this.chaseSanzhar.rightArm.rotation.set(-0.65, 0, 0.15);
+      this.chaseSanzhar.group.position.set(0.94, 1.18, -0.22);
+      this.chaseSanzhar.group.rotation.set(0, Math.PI * 0.88, 0);
+      if (this.chaseSanzhar.torso) {
+        this.chaseSanzhar.torso.rotation.set(-0.04, -0.18, 0);
+      }
+      this.chaseSanzhar.head.rotation.set(0.04, -0.15, 0);
+      this.chaseSanzhar.leftArm.rotation.set(-0.55, -0.15, -0.12);
+      this.chaseSanzhar.rightArm.rotation.set(-0.48, 0.1, 0.15);
     }
   }
 
@@ -2243,6 +2302,7 @@ export class StoryInstances {
     );
     lobbyCeil.position.set(0, yLobby + lobbyH + 0.2, -5);
     this.undergroundGroup.add(lobbyCeil);
+    this.physics.addBox('ug_lobby_ceil', 0, yLobby + lobbyH + 0.2, -5, 30, 0.4, 46);
 
     addBox('ug_l_w', -14.6, yLobby + lobbyH * 0.5, -5, 0.8, lobbyH, 46);
     addBox('ug_l_e', 14.6, yLobby + lobbyH * 0.5, -5, 0.8, lobbyH, 46);
@@ -2292,15 +2352,17 @@ export class StoryInstances {
     }
 
     // Wall-mounted emissiveMap server rack banks
-    for (const rz of [0, -14]) {
+    [0, -14].forEach((rz, idx) => {
       const rackW = new THREE.Mesh(new THREE.BoxGeometry(1.1, 4.6, 4.4), rackMat);
       rackW.position.set(-13.6, yLobby + 2.3, rz);
       this.undergroundGroup.add(rackW);
+      this.physics.addBox(`ug_rack_w_${idx}`, -13.6, yLobby + 2.3, rz, 1.1, 4.6, 4.4);
       this.addNeonStrip(this.undergroundGroup, -13.02, yLobby + 4.62, rz, 0.08, 0.08, 4.44, 0x00f0ff, 1.6);
-    }
+    });
     const rackE = new THREE.Mesh(new THREE.BoxGeometry(1.1, 4.6, 4.4), rackMat);
     rackE.position.set(13.6, yLobby + 2.3, -14);
     this.undergroundGroup.add(rackE);
+    this.physics.addBox('ug_rack_e_0', 13.6, yLobby + 2.3, -14, 1.1, 4.6, 4.4);
     this.addNeonStrip(this.undergroundGroup, 13.02, yLobby + 4.62, -14, 0.08, 0.08, 4.44, 0xff003c, 1.6);
 
     // Tactical waist-high cover blocks with cyan neon trim
@@ -2446,6 +2508,7 @@ export class StoryInstances {
     );
     arenaCeil.position.set(0, yCore + arenaH + 0.2, -65.5);
     this.undergroundGroup.add(arenaCeil);
+    this.physics.addBox('boss_arena_ceil', 0, yCore + arenaH + 0.2, -65.5, 44, 0.4, 65.4);
 
     addBox('boss_w', -21.6, yCore + arenaH * 0.5, -65.5, 0.8, arenaH, 65.4);
     addBox('boss_e', 21.6, yCore + arenaH * 0.5, -65.5, 0.8, arenaH, 65.4);
@@ -2490,11 +2553,13 @@ export class StoryInstances {
     }
 
     // Flanking emissiveMap server rack banks along West & East Arena walls
+    let bossRackIdx = 0;
     for (const rz of [-42, -57, -72]) {
       for (const sx of [-20.5, 20.5]) {
         const bank = new THREE.Mesh(new THREE.BoxGeometry(1.2, 5.4, 6.2), rackMat);
         bank.position.set(sx, yCore + 2.7, rz);
         this.undergroundGroup.add(bank);
+        this.physics.addBox(`boss_rack_${bossRackIdx++}`, sx, yCore + 2.7, rz, 1.2, 5.4, 6.2);
         this.addNeonStrip(
           this.undergroundGroup,
           sx > 0 ? sx - 0.64 : sx + 0.64,
@@ -2877,6 +2942,12 @@ export class StoryInstances {
     );
     bridge.position.set(0, y - 0.15, -13);
     this.cyberspaceGroup.add(bridge);
+
+    // Invisible guardrails keeping the player on the 8m-wide Cyberspace bridge
+    this.physics.addBox('cyb_rail_l', -4.35, y + 2.5, -13, 0.8, 5, 50, { blocksSight: false });
+    this.physics.addBox('cyb_rail_r', 4.35, y + 2.5, -13, 0.8, 5, 50, { blocksSight: false });
+    this.physics.addBox('cyb_back', 0, y + 2.5, 11.4, 9.5, 5, 0.8, { blocksSight: false });
+    this.physics.addBox('cyb_front', 0, y + 2.5, -24.2, 9.5, 5, 0.8, { blocksSight: false });
 
     this.addNeonStrip(this.cyberspaceGroup, -3.95, y + 0.08, -13, 0.12, 0.12, 48, 0x00f0ff, 1.9);
     this.addNeonStrip(this.cyberspaceGroup, 3.95, y + 0.08, -13, 0.12, 0.12, 48, 0x00f0ff, 1.9);
@@ -3374,5 +3445,14 @@ export class StoryInstances {
         this.taldySteeringWheel.rotation.z = Math.sin(elapsed * 0.85) * 0.06;
       }
     }
+  }
+
+  dispose(): void {
+    for (const tex of this.localTextures) {
+      tex.dispose();
+    }
+    this.localTextures.length = 0;
+    this.penthouseElevator.dispose();
+    this.undergroundElevator.dispose();
   }
 }

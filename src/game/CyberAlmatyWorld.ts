@@ -89,8 +89,11 @@ export class CyberAlmatyWorld {
   private motelBathTubeMat?: THREE.MeshStandardMaterial;
   private motelTvMat?: THREE.MeshStandardMaterial;
   private motelBedNeonMat?: THREE.MeshStandardMaterial;
+  private motelLockDoorMesh: THREE.Group | null = null;
+  private gigPropMats = new Map<string, { beaconMat: THREE.MeshStandardMaterial; propMesh?: THREE.Object3D }>();
   private avFleet: FlyingAVState[] = [];
   private blinkingBeacons: THREE.MeshStandardMaterial[] = [];
+  private localTextures: THREE.CanvasTexture[] = [];
 
   // Lightweight 3D Cyber-Rain state
   private rainLines!: THREE.LineSegments;
@@ -116,6 +119,7 @@ export class CyberAlmatyWorld {
     this.buildJunkyardDistrict();
     this.buildMarakulinTowerPlaza();
     this.buildKokTobeOverlookBuilding();
+    this.buildOpenWorldGigProps();
     this.buildProceduralCityBlocks();
     this.buildStreetFurniture();
     this.buildFlyingAVTraffic();
@@ -202,6 +206,7 @@ export class CyberAlmatyWorld {
     tex.repeat.set(repeatX, repeatY);
     tex.anisotropy = 4;
     tex.needsUpdate = true;
+    this.localTextures.push(tex);
     return tex;
   }
 
@@ -807,6 +812,7 @@ export class CyberAlmatyWorld {
     const roof = new THREE.Mesh(new THREE.BoxGeometry(25, 1.2, 23), wallMat);
     roof.position.set(cx, 7.2, cz);
     group.add(roof);
+    this.chunks.addChunkCollider(this.physics, 'marum_roof_col', cx, 7.2, cz, 25, 1.2, 23);
 
     // Warm neon ceiling trusses spanning the anti-cafe lounge
     for (let tz = -6.5; tz <= 6.5; tz += 4.3) {
@@ -917,6 +923,12 @@ export class CyberAlmatyWorld {
       booth.rotation.y = rot;
       group.add(booth);
     }
+    this.chunks.addChunkCollider(this.physics, 'marum_booth_e', cx + 7.95, 0.7, cz + 4.2, 2.5, 1.4, 3.4, {
+      blocksSight: false,
+    });
+    this.chunks.addChunkCollider(this.physics, 'marum_booth_w', cx - 7.95, 0.7, cz + 4.2, 2.5, 1.4, 3.4, {
+      blocksSight: false,
+    });
 
     // Ripperdoc surgical bay with articulated overhead surgical lamp & spotlight
     const ripperChair = new THREE.Mesh(
@@ -931,6 +943,9 @@ export class CyberAlmatyWorld {
     );
     ripperChair.position.set(cx - 7.5, 0.7, cz - 4);
     group.add(ripperChair);
+    this.chunks.addChunkCollider(this.physics, 'marum_ripper_chair', cx - 7.5, 0.7, cz - 4, 2.2, 1.2, 2.8, {
+      blocksSight: false,
+    });
 
     const lampStem = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 2.8, 8), trussMat);
     lampStem.position.set(cx - 7.5, 5.1, cz - 4);
@@ -960,6 +975,9 @@ export class CyberAlmatyWorld {
     );
     gigTerm.position.set(cx + 7.2, 1.15, cz - 3);
     group.add(gigTerm);
+    this.chunks.addChunkCollider(this.physics, 'marum_gig_term', cx + 7.2, 1.15, cz - 3, 1.4, 2.1, 0.8, {
+      blocksSight: false,
+    });
 
     // Egor model (hidden until Marum epilogue)
     this.egorMarumRig = buildEgorModel();
@@ -1046,6 +1064,7 @@ export class CyberAlmatyWorld {
     const roof = new THREE.Mesh(new THREE.BoxGeometry(23.6, 0.85, 23.6), exteriorMat);
     roof.position.set(cx, wallH + 0.42, cz);
     group.add(roof);
+    this.chunks.addChunkCollider(this.physics, 'motel_roof_col', cx, wallH + 0.42, cz, 23.6, 0.85, 23.6);
 
     const ceilingDrop = new THREE.Mesh(new THREE.PlaneGeometry(21.6, 21.6), ceilingMat);
     ceilingDrop.rotation.x = Math.PI / 2;
@@ -1064,6 +1083,20 @@ export class CyberAlmatyWorld {
     addOuterWall('motel_right', -154.4, cz, 0.8, 22.4);
     addOuterWall('motel_front_l', -171.6, -154.4, 8.4, 0.8);
     addOuterWall('motel_front_r', -158.4, -154.4, 8.4, 0.8);
+
+    // Toggleable Motel Room 204 steel security door (locked during Act 4 Betrayal)
+    const lockDoorGroup = new THREE.Group();
+    const lockDoorMesh = new THREE.Mesh(new THREE.BoxGeometry(4.9, 3.85, 0.24), darkSteel);
+    lockDoorMesh.position.set(cx, 1.95, -154.4);
+    const lockDoorBar = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.1, 0.3), redNeonMat);
+    lockDoorBar.position.set(cx, 2.0, -154.4);
+    lockDoorGroup.add(lockDoorMesh, lockDoorBar);
+    lockDoorGroup.visible = false;
+    this.motelLockDoorMesh = lockDoorGroup;
+    group.add(lockDoorGroup);
+    this.chunks.addChunkCollider(this.physics, 'motel_entry_lock', cx, 2.0, -154.4, 5.0, 4.0, 0.6, {
+      active: false,
+    });
 
     // Interior wallpaper lining on main room walls so interior feels unmistakably like a cheap motel
     const northLining = new THREE.Mesh(new THREE.PlaneGeometry(12.6, wallH), wallpaperMat);
@@ -1189,6 +1222,7 @@ export class CyberAlmatyWorld {
     const sinkBulkhead = new THREE.Mesh(new THREE.BoxGeometry(3.8, wallH, 0.92), bathTileWallMat);
     sinkBulkhead.position.set(-173.25, wallH * 0.5, -174.7);
     group.add(sinkBulkhead);
+    this.chunks.addChunkCollider(this.physics, 'motel_sink_bulkhead', -173.25, wallH * 0.5, -174.7, 3.8, wallH, 0.92);
 
     // Porcelain Sink & Chrome Faucet with subtle crimson stains at (-173.2, 0.25, -173.8)
     const sinkX = -173.2;
@@ -1200,6 +1234,9 @@ export class CyberAlmatyWorld {
     const sinkCounter = new THREE.Mesh(new THREE.BoxGeometry(1.38, 0.2, 0.84), porcelainMat);
     sinkCounter.position.set(sinkX, 1.02, sinkZ);
     group.add(sinkCounter);
+    this.chunks.addChunkCollider(this.physics, 'motel_sink_col', sinkX, 0.6, sinkZ, 1.38, 1.2, 0.84, {
+      blocksSight: false,
+    });
 
     const sinkBasin = new THREE.Mesh(
       new THREE.BoxGeometry(1.02, 0.09, 0.56),
@@ -1289,6 +1326,9 @@ export class CyberAlmatyWorld {
     flushHandle.position.set(-0.14, 1.02, 0.3);
     toiletGroup.add(flushHandle);
     group.add(toiletGroup);
+    this.chunks.addChunkCollider(this.physics, 'motel_toilet_col', -174.35, 0.65, -168.7, 0.85, 1.1, 0.72, {
+      blocksSight: false,
+    });
 
     // -------------------------------------------------------------------------
     // MAIN MOTEL ROOM 204 PROPS (Distinctly seedy Cyber-Tastak atmosphere)
@@ -1346,6 +1386,9 @@ export class CyberAlmatyWorld {
     const nightstand = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.72, 0.85), scuffedWood);
     nightstand.position.set(-155.5, 0.58, -160.85);
     group.add(nightstand);
+    this.chunks.addChunkCollider(this.physics, 'motel_nightstand_col', -155.5, 0.58, -160.85, 0.85, 1.1, 0.85, {
+      blocksSight: false,
+    });
     const lampBase = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 0.34, 8), darkSteel);
     lampBase.position.set(-155.5, 1.12, -160.85);
     group.add(lampBase);
@@ -1411,6 +1454,9 @@ export class CyberAlmatyWorld {
       chairGroup.add(armRest);
     }
     group.add(chairGroup);
+    this.chunks.addChunkCollider(this.physics, 'motel_chair_col', -160.0, 0.75, -169.4, 1.3, 1.3, 1.2, {
+      blocksSight: false,
+    });
 
     // Sleazy low coffee table with liquor bottles & glowing credchips
     const tableX = -162.3;
@@ -1418,6 +1464,9 @@ export class CyberAlmatyWorld {
     const tableTop = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.1, 1.05), scuffedWood);
     tableTop.position.set(tableX, 0.78, tableZ);
     group.add(tableTop);
+    this.chunks.addChunkCollider(this.physics, 'motel_coffee_table_col', tableX, 0.45, tableZ, 1.85, 0.9, 1.05, {
+      blocksSight: false,
+    });
     for (const [lx, lz] of [
       [-0.78, -0.4],
       [0.78, -0.4],
@@ -1948,9 +1997,56 @@ export class CyberAlmatyWorld {
     padSign.rotation.y = -Math.PI / 2;
     group.add(padSign);
 
+    // Rooftop return elevator pad & glowing sign at (154, 36, 155) matching rooftop_elevator_down
+    const downPad = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.9, 2.1, 0.24, 16),
+      this.makeNeonStripMaterial(0xb537f2, 1.65),
+    );
+    downPad.position.set(154, h + 0.14, 155);
+    group.add(downPad);
+
+    const downSignTex = this.textures.getNeonSign('ЛИФТ ВНИЗ', 'ВЕРНУТЬСЯ В КИБЕР-АЛМАТЫ // [E]', '#b537f2', '#fcee0a');
+    const downSign = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 1.15), this.makeSignMaterial(downSignTex, 0.85));
+    downSign.position.set(154, h + 2.15, 153.2);
+    group.add(downSign);
+
     this.chunks.addLandmark(group);
-    // Solid body collider + walkable rooftop surface
+    // Solid body collider + walkable rooftop surface + 4 invisible perimeter guardrails
     this.physics.addBox('overlook_body', cx, h * 0.5, cz, 28, h, 28);
+    this.physics.addBox('overlook_rail_n', cx, h + 3, cz - 14.1, 28.6, 6, 0.5, {
+      blocksSight: false,
+      blocksBullets: false,
+    });
+    this.physics.addBox('overlook_rail_s', cx, h + 3, cz + 14.1, 28.6, 6, 0.5, {
+      blocksSight: false,
+      blocksBullets: false,
+    });
+    this.physics.addBox('overlook_rail_w', cx - 14.1, h + 3, cz, 0.5, 6, 28.6, {
+      blocksSight: false,
+      blocksBullets: false,
+    });
+    this.physics.addBox('overlook_rail_e', cx + 14.1, h + 3, cz, 0.5, 6, 28.6, {
+      blocksSight: false,
+      blocksBullets: false,
+    });
+
+    // Street-level colliders & minimap footprints for the 3 rooftop-vista skyscrapers
+    const vistaTowers: Array<{ id: string; x: number; z: number; sx: number; sy: number; sz: number }> = [
+      { id: 'vista_monolith', x: 147.4, z: 139.7, sx: 14.5, sy: 46.5, sz: 14.5 },
+      { id: 'vista_right_complex', x: 156.0, z: 130.0, sx: 14.5, sy: 51.0, sz: 14.5 },
+      { id: 'vista_marakulin_l', x: 90.5, z: 106.5, sx: 19.0, sy: 66.0, sz: 15.0 },
+      { id: 'vista_marakulin_r', x: 104.7, z: 91.2, sx: 19.0, sy: 72.0, sz: 18.0 },
+    ];
+    for (const vt of vistaTowers) {
+      this.chunks.addChunkCollider(this.physics, vt.id, vt.x, vt.sy * 0.5, vt.z, vt.sx, vt.sy, vt.sz);
+      this.minimapBuildings.push({
+        minX: vt.x - vt.sx * 0.5,
+        maxX: vt.x + vt.sx * 0.5,
+        minZ: vt.z - vt.sz * 0.5,
+        maxZ: vt.z + vt.sz * 0.5,
+        color: '#1b2640',
+      });
+    }
 
     this.minimapBuildings.push({
       minX: cx - 14,
@@ -1959,6 +2055,104 @@ export class CyberAlmatyWorld {
       maxZ: cz + 14,
       color: '#b537f2',
     });
+  }
+
+  /**
+   * Builds visible 3D interactive set-piece props for open-world gigs (Samir's Malorian Stash
+   * & Cyber-Tastak Marakulin Surveillance Relay) so objectives are never invisible floating prompts.
+   */
+  private buildOpenWorldGigProps(): void {
+    const steelMat = new THREE.MeshStandardMaterial({ color: 0x161d2c, metalness: 0.72, roughness: 0.36 });
+    const darkMat = new THREE.MeshStandardMaterial({ color: 0x101420, metalness: 0.6, roughness: 0.45 });
+
+    // 1. Samir's Malorian S-3516 Tactical Weapons Stash at (-165, 0, -78)
+    const stashGroup = new THREE.Group();
+    stashGroup.position.set(-165, 0, -78);
+    const crate = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.85, 1.1), steelMat);
+    crate.position.y = 0.425;
+    stashGroup.add(crate);
+
+    const stashBeaconMat = this.makeNeonStripMaterial(0xfcee0a, 2.0);
+    const crateTrim = new THREE.Mesh(new THREE.BoxGeometry(1.76, 0.08, 1.16), stashBeaconMat);
+    crateTrim.position.y = 0.86;
+    stashGroup.add(crateTrim);
+
+    // Floating holographic Malorian pistol silhouette above stash crate
+    const holoGun = new THREE.Group();
+    const gunSlide = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.14, 0.56), stashBeaconMat);
+    const gunGrip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.24, 0.12), stashBeaconMat);
+    gunGrip.position.set(0, -0.15, 0.18);
+    gunGrip.rotation.x = 0.22;
+    holoGun.add(gunSlide, gunGrip);
+    holoGun.position.set(0, 1.38, 0);
+    stashGroup.add(holoGun);
+
+    const stashSignTex = this.textures.getNeonSign('ТАЙНИК САМИРА', 'MALORIAN S-3516 // [E]', '#fcee0a', '#ff003c');
+    const stashSign = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 0.9), this.makeSignMaterial(stashSignTex, 0.9));
+    stashSign.position.set(0, 2.25, 0);
+    stashGroup.add(stashSign);
+
+    this.chunks.addToChunk(-165, -78, stashGroup);
+    this.chunks.addChunkCollider(this.physics, 'gig_malorian_crate', -165, 0.45, -78, 1.7, 0.9, 1.1, {
+      blocksSight: false,
+    });
+    this.gigPropMats.set('gig_malorian', { beaconMat: stashBeaconMat, propMesh: holoGun });
+
+    // 2. Cyber-Tastak Marakulin Surveillance Relay Terminal at (-82, 0, -162)
+    const relayGroup = new THREE.Group();
+    relayGroup.position.set(-82, 0, -162);
+    const relayBase = new THREE.Mesh(new THREE.BoxGeometry(1.8, 2.4, 1.1), darkMat);
+    relayBase.position.y = 1.2;
+    relayGroup.add(relayBase);
+
+    const relayMast = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.18, 4.6, 8), steelMat);
+    relayMast.position.set(0, 4.5, -0.2);
+    relayGroup.add(relayMast);
+
+    const relayBeaconMat = this.makeNeonStripMaterial(0xff003c, 2.1);
+    const relayDish = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.08, 8, 20), relayBeaconMat);
+    relayDish.position.set(0, 6.2, -0.1);
+    relayGroup.add(relayDish);
+
+    const relayScreenTex = this.textures.getNeonSign(
+      'КОРПО-РЕТРАНСЛЯТОР',
+      'MARAKULIN NET // [E] ВЗЛОМ',
+      '#ff003c',
+      '#00f0ff',
+    );
+    const relayScreen = new THREE.Mesh(new THREE.PlaneGeometry(1.55, 0.8), this.makeSignMaterial(relayScreenTex, 1.0));
+    relayScreen.position.set(0, 1.65, 0.58);
+    relayGroup.add(relayScreen);
+
+    this.chunks.addToChunk(-82, -162, relayGroup);
+    this.chunks.addChunkCollider(this.physics, 'gig_tastak_relay', -82, 1.2, -162, 1.8, 2.4, 1.1, {
+      blocksSight: false,
+    });
+    this.gigPropMats.set('gig_tastak_hack', { beaconMat: relayBeaconMat });
+  }
+
+  setGigPropCompleted(gigId: string, completed: boolean): void {
+    const entry = this.gigPropMats.get(gigId);
+    if (!entry) return;
+    if (completed) {
+      entry.beaconMat.color.setHex(0x00ff88);
+      entry.beaconMat.emissive.setHex(0x00ff88);
+      entry.beaconMat.emissiveIntensity = 1.2;
+      if (entry.propMesh) entry.propMesh.visible = false;
+    } else {
+      const hex = gigId === 'gig_malorian' ? 0xfcee0a : 0xff003c;
+      entry.beaconMat.color.setHex(hex);
+      entry.beaconMat.emissive.setHex(hex);
+      entry.beaconMat.emissiveIntensity = 2.0;
+      if (entry.propMesh) entry.propMesh.visible = true;
+    }
+  }
+
+  setMotelLocked(locked: boolean): void {
+    if (this.motelLockDoorMesh) {
+      this.motelLockDoorMesh.visible = locked;
+    }
+    this.physics.setActive('motel_entry_lock', locked);
   }
 
   // ---------------------------------------------------------------------------
@@ -2332,16 +2526,6 @@ export class CyberAlmatyWorld {
         category: 'story',
       },
       {
-        id: 'marakulin_front_doors',
-        label: '[E] ВОЙТИ В МАРАКУЛИН ТАУЭР (ШТУРМ)',
-        x: 170,
-        y: 1.5,
-        z: -140,
-        radius: 5.5,
-        enabled: false,
-        category: 'story',
-      },
-      {
         id: 'gig_malorian_stash',
         label: '[E] ЗАБРАТЬ MALORIAN S-3516 САМИРА',
         x: -165,
@@ -2572,7 +2756,25 @@ export class CyberAlmatyWorld {
       }
     }
 
-    // 7. 3D Cyber-Rain Streaks following player (or rooftop/city center when playerPos omitted)
+    // 7. 3D Cyber-Rain Streaks following player (hidden while indoors inside Marum or Motel 204)
+    const isIndoors =
+      playerPos !== undefined &&
+      ((playerPos.x >= -58 &&
+        playerPos.x <= -34 &&
+        playerPos.z >= -51 &&
+        playerPos.z <= -29 &&
+        playerPos.y < 7) ||
+        (playerPos.x >= -176 &&
+          playerPos.x <= -154 &&
+          playerPos.z >= -176 &&
+          playerPos.z <= -154 &&
+          playerPos.y < 5.8));
+
+    this.rainLines.visible = !isIndoors;
+    if (isIndoors) {
+      return;
+    }
+
     const centerX = playerPos ? playerPos.x : this.samirRooftopRig.group.visible ? 165 : 0;
     const centerY = playerPos ? playerPos.y : this.samirRooftopRig.group.visible ? 36 : 4;
     const centerZ = playerPos ? playerPos.z : this.samirRooftopRig.group.visible ? 165 : 0;
@@ -2607,5 +2809,12 @@ export class CyberAlmatyWorld {
 
     const attr = this.rainLines.geometry.getAttribute('position') as THREE.BufferAttribute;
     attr.needsUpdate = true;
+  }
+
+  dispose(): void {
+    for (const tex of this.localTextures) {
+      tex.dispose();
+    }
+    this.localTextures.length = 0;
   }
 }

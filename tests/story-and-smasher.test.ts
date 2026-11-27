@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { PhysicsWorld } from '../src/engine/Physics';
 import { EnemyManager } from '../src/game/EnemyManager';
-import { RikhardSmasherState } from '../src/game/RikhardSmasherBoss';
+import { RikhardSmasherBoss, RikhardSmasherState } from '../src/game/RikhardSmasherBoss';
 import { StoryStateMachine } from '../src/game/StoryDirector';
 import { ElevatorState } from '../src/game/ElevatorSystem';
 
@@ -120,5 +120,111 @@ describe('EnemyManager death re-entrancy safety', () => {
     }).not.toThrow();
 
     expect(hits).toBeGreaterThan(0);
+  });
+
+  it('blocks enemy bullets behind cover, registers humanoid leg hits, and blocks melee through walls', () => {
+    const scene = new THREE.Scene();
+    const physics = new PhysicsWorld();
+    const mgr = new EnemyManager(scene);
+
+    // Solid cover wall between enemy at Z=-8 and player at Z=0
+    physics.addBox('cover_wall', 0, 2, -4, 6, 4, 1);
+    mgr.spawnWave([{ id: 'g_cover', archetype: 'guard', zoneId: 'cover', x: 0, y: 0, z: -8 }]);
+
+    let hits = 0;
+    for (let step = 0; step < 50; step++) {
+      mgr.update(
+        0.05,
+        { x: 0, y: 0, z: 0 },
+        { x: 0, y: 1.68, z: 0 },
+        physics,
+        {
+          onEnemyShot: () => {},
+          onPlayerHit: () => {
+            hits++;
+          },
+        },
+      );
+    }
+    expect(hits).toBe(0);
+
+    // Melee arc through the solid wall must not connect
+    const blockedMelee = mgr.applyMeleeArc(
+      new THREE.Vector3(0, 1.5, -2.5),
+      new THREE.Vector3(0, 0, -1),
+      8,
+      90,
+      physics,
+    );
+    expect(blockedMelee.length).toBe(0);
+
+    // Bullet aimed at humanoid legs (y = 0.45) must register as a hit
+    mgr.clearZone();
+    mgr.spawnWave([{ id: 'g_legs', archetype: 'guard', zoneId: 'legs', x: 0, y: 0, z: -8 }]);
+    const legHit = mgr.checkBulletHit(
+      new THREE.Vector3(0, 0.45, -5.5),
+      new THREE.Vector3(0, 0, -1),
+      10,
+      25,
+      2.0,
+    );
+    expect(legHit.hit).toBe(true);
+    expect(legHit.headshot).toBe(false);
+  });
+});
+
+describe('ElevatorState.snapToArrived & RikhardSmasherBoss combat guards', () => {
+  it('snaps elevator directly to destination floor and doors open', () => {
+    const elev = new ElevatorState({
+      id: 'snap_elev',
+      centerX: 0,
+      centerZ: -30.5,
+      startY: -66,
+      endY: -90,
+      startFloorLabel: 1,
+      endFloorLabel: -12,
+      travelDuration: 3.6,
+      doorFacingZ: 1,
+      exitDoorFacingZ: -1,
+    });
+    elev.snapToArrived();
+    expect(elev.phase).toBe('ARRIVED');
+    expect(elev.currentY).toBe(-90);
+    expect(elev.displayFloor).toBe(-12);
+    expect(elev.doorOpen).toBe(1);
+  });
+
+  it('prevents damaging Rikhard Smasher through pillars or while STAGGERED/DORMANT', () => {
+    const scene = new THREE.Scene();
+    const physics = new PhysicsWorld();
+    const boss = new RikhardSmasherBoss(scene, 0);
+
+    // Dormant -> immune to bullets and melee
+    expect(
+      boss.checkBulletHit(new THREE.Vector3(0, 1.5, 5), new THREE.Vector3(0, 0, -1), 20, 100, 2).hit,
+    ).toBe(false);
+    expect(
+      boss.applyMeleeDamage(new THREE.Vector3(0, 1.5, -1), 5, 100, new THREE.Vector3(0, 0, -1), physics).hit,
+    ).toBe(false);
+
+    boss.activateAt(0, 0, -6);
+    // Solid pillar blocking melee line-of-sight at Z=-3
+    physics.addBox('arena_pillar', 0, 2, -3, 3, 4, 1);
+    expect(
+      boss.applyMeleeDamage(new THREE.Vector3(0, 1.5, -1.5), 6, 100, new THREE.Vector3(0, 0, -1), physics).hit,
+    ).toBe(false);
+
+    // Facing away from boss -> melee cone rejects hit
+    physics.setActive('arena_pillar', false);
+    expect(
+      boss.applyMeleeDamage(new THREE.Vector3(0, 1.5, -3.5), 6, 100, new THREE.Vector3(0, 0, 1), physics).hit,
+    ).toBe(false);
+
+    // Stagger boss -> further shots/melee must be ignored
+    boss.state.applyDamage(2000);
+    expect(boss.state.phase).toBe('STAGGERED');
+    expect(
+      boss.applyMeleeDamage(new THREE.Vector3(0, 1.5, -3.5), 6, 100, new THREE.Vector3(0, 0, -1), physics).hit,
+    ).toBe(false);
   });
 });

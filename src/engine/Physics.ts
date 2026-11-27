@@ -21,7 +21,25 @@ export class PhysicsWorld {
   addCollider(box: AABB): AABB {
     const existing = this.byId.get(box.id);
     if (existing) {
+      const prevChunkKey = existing.chunkKey;
       Object.assign(existing, box);
+      if (prevChunkKey !== existing.chunkKey) {
+        if (prevChunkKey) {
+          const prevArr = this.byChunk.get(prevChunkKey);
+          if (prevArr) {
+            const idx = prevArr.indexOf(existing);
+            if (idx >= 0) prevArr.splice(idx, 1);
+          }
+        }
+        if (existing.chunkKey) {
+          let nextArr = this.byChunk.get(existing.chunkKey);
+          if (!nextArr) {
+            nextArr = [];
+            this.byChunk.set(existing.chunkKey, nextArr);
+          }
+          nextArr.push(existing);
+        }
+      }
       return existing;
     }
     this.colliders.push(box);
@@ -128,6 +146,14 @@ export class PhysicsWorld {
     return true;
   }
 
+  setCollidersActiveByPrefix(prefix: string, active: boolean): void {
+    for (const box of this.colliders) {
+      if (box.id.startsWith(prefix)) {
+        box.active = active;
+      }
+    }
+  }
+
   /**
    * Returns the highest walkable support surface (floor or top of low cover/crate/platform)
    * beneath a cylinder at (x, z) without snapping up walls taller than the player's feet.
@@ -145,6 +171,90 @@ export class PhysicsWorld {
       }
     }
     return supportY;
+  }
+
+  /**
+   * Returns the lowest solid ceiling `minY` above a jumping cylinder at (x, z),
+   * or Infinity if unobstructed overhead.
+   */
+  getCeilingY(x: number, z: number, radius: number, feetY: number, height: number): number {
+    let ceilingY = Number.POSITIVE_INFINITY;
+    const currentTopY = feetY + height;
+    for (const box of this.colliders) {
+      if (!this.isBoxEnabled(box)) continue;
+      if (box.minY < currentTopY - 0.15) continue;
+      if (box.minY >= ceilingY) continue;
+      if (this.circleIntersectsAABB(x, z, radius * 0.85, box)) {
+        ceilingY = box.minY;
+      }
+    }
+    return ceilingY;
+  }
+
+  /**
+   * Checks whether a vertical cylinder at (x, z) is completely free of active solid colliders.
+   */
+  isCylinderFree(x: number, z: number, radius: number, feetY: number, height: number): boolean {
+    const topY = feetY + height;
+    const stepUpHeight = 0.25;
+    for (const box of this.colliders) {
+      if (!this.isBoxEnabled(box) || box.isFloor) continue;
+      if (topY <= box.minY + 0.05 || feetY >= box.maxY - stepUpHeight) continue;
+      if (this.circleIntersectsAABB(x, z, radius, box)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Searches radially from (preferredX, preferredZ) to find a nearby collision-free position
+   * clamped inside optional world bounds.
+   */
+  findNearestClearPosition(
+    preferredX: number,
+    preferredZ: number,
+    radius: number,
+    feetY: number,
+    height: number,
+    options?: {
+      minX?: number;
+      maxX?: number;
+      minZ?: number;
+      maxZ?: number;
+      maxRadius?: number;
+      step?: number;
+    },
+  ): { x: number; z: number; found: boolean } {
+    const minX = options?.minX ?? -242;
+    const maxX = options?.maxX ?? 242;
+    const minZ = options?.minZ ?? -242;
+    const maxZ = options?.maxZ ?? 242;
+    const maxR = options?.maxRadius ?? 18;
+    const step = options?.step ?? 2.2;
+
+    const clampX = (v: number) => Math.max(minX, Math.min(maxX, v));
+    const clampZ = (v: number) => Math.max(minZ, Math.min(maxZ, v));
+
+    const startX = clampX(preferredX);
+    const startZ = clampZ(preferredZ);
+    if (this.isCylinderFree(startX, startZ, radius, feetY, height)) {
+      return { x: startX, z: startZ, found: true };
+    }
+
+    for (let r = step; r <= maxR; r += step) {
+      const samples = Math.max(8, Math.round((Math.PI * 2 * r) / Math.max(2, step)));
+      for (let i = 0; i < samples; i++) {
+        const angle = (i / samples) * Math.PI * 2;
+        const cx = clampX(startX + Math.cos(angle) * r);
+        const cz = clampZ(startZ + Math.sin(angle) * r);
+        if (this.isCylinderFree(cx, cz, radius, feetY, height)) {
+          return { x: cx, z: cz, found: true };
+        }
+      }
+    }
+
+    return { x: startX, z: startZ, found: false };
   }
 
   /**
@@ -226,7 +336,7 @@ export class PhysicsWorld {
     let z = startZ;
     let collided = false;
     const topY = feetY + height;
-    const stepUpHeight = 0.22;
+    const stepUpHeight = 0.25;
 
     if (x !== startX) {
       for (const box of this.colliders) {

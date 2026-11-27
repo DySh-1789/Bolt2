@@ -168,6 +168,23 @@ export class RikhardSmasherBoss {
   private ghosts: AfterimageGhost[] = [];
   private sparks: ArmorSpark[] = [];
 
+  // Shared geometries & static materials so dynamic boss VFX never leak GPU buffers
+  private projGeo = new THREE.SphereGeometry(0.16, 6, 6);
+  private projMatNormal = new THREE.MeshBasicMaterial({ color: 0xff4400 });
+  private projMatP3 = new THREE.MeshBasicMaterial({ color: 0x00f0ff });
+  private missileRingGeo = new THREE.RingGeometry(1.6, 2.2, 20);
+  private missileRingMat = new THREE.MeshBasicMaterial({
+    color: 0xff003c,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.78,
+  });
+  private missileConeGeo = new THREE.ConeGeometry(0.18, 0.7, 6);
+  private missileConeMat = new THREE.MeshBasicMaterial({ color: 0xfcee0a });
+  private shockwaveGeo = new THREE.RingGeometry(1.0, 1.75, 28);
+  private ghostGeo = new THREE.BoxGeometry(1.5, 2.9, 1.0);
+  private sparkGeo = new THREE.BoxGeometry(0.06, 0.06, 0.14);
+
   private scene: THREE.Scene;
   private raycaster = new THREE.Raycaster();
   private arenaFloorY = -90;
@@ -485,6 +502,8 @@ export class RikhardSmasherBoss {
     this.arenaFloorY = y;
     this.state.startFight();
     this.clearEffects();
+    this.flashTimer = 0;
+    (this.bodyHitbox.material as THREE.MeshStandardMaterial).emissive.setHex(0x000000);
     this.group.position.set(x, y, z);
     this.auraLight.position.set(x, y + 2.35, z + 0.85);
     this.auraLight.intensity = 8.5;
@@ -515,6 +534,8 @@ export class RikhardSmasherBoss {
   deactivate(): void {
     this.state.reset();
     this.clearEffects();
+    this.flashTimer = 0;
+    (this.bodyHitbox.material as THREE.MeshStandardMaterial).emissive.setHex(0x000000);
     this.chestPlateMat.emissive.setHex(0x000000);
     this.chestPlateMat.emissiveIntensity = 0;
     this.auraLight.intensity = 0;
@@ -529,11 +550,20 @@ export class RikhardSmasherBoss {
       this.scene.remove(m.missile);
     }
     this.missiles = [];
-    for (const sw of this.shockwaves) this.scene.remove(sw.mesh);
+    for (const sw of this.shockwaves) {
+      this.scene.remove(sw.mesh);
+      (sw.mesh.material as THREE.Material).dispose();
+    }
     this.shockwaves = [];
-    for (const g of this.ghosts) this.scene.remove(g.mesh);
+    for (const g of this.ghosts) {
+      this.scene.remove(g.mesh);
+      (g.mesh.material as THREE.Material).dispose();
+    }
     this.ghosts = [];
-    for (const s of this.sparks) this.scene.remove(s.mesh);
+    for (const s of this.sparks) {
+      this.scene.remove(s.mesh);
+      (s.mesh.material as THREE.Material).dispose();
+    }
     this.sparks = [];
   }
 
@@ -554,7 +584,7 @@ export class RikhardSmasherBoss {
    * Positions staggered Rikhard Smasher kneeling directly in front of the player
    * for the cinematic Bolt-1-style interactive Malorian execution cutscene.
    */
-  positionForExecution(playerPos: Vec3): Vec3 {
+  positionForExecution(playerPos: Vec3, physics?: PhysicsWorld): Vec3 {
     this.clearEffects();
     this.group.visible = true;
 
@@ -570,8 +600,20 @@ export class RikhardSmasherBoss {
     }
 
     const execDist = 2.35;
-    const tx = playerPos.x + dirX * execDist;
-    const tz = playerPos.z + dirZ * execDist;
+    let tx = Math.max(-19.5, Math.min(19.5, playerPos.x + dirX * execDist));
+    let tz = Math.max(-95.5, Math.min(-35.5, playerPos.z + dirZ * execDist));
+    if (physics) {
+      const resolved = physics.resolveCylinderMove(
+        { x: playerPos.x, y: this.arenaFloorY, z: playerPos.z },
+        tx,
+        tz,
+        1.1,
+        this.arenaFloorY,
+        3.0,
+      );
+      tx = resolved.x;
+      tz = resolved.z;
+    }
     const ty = this.arenaFloorY - 0.58;
 
     this.group.position.set(tx, ty, tz);
@@ -604,10 +646,14 @@ export class RikhardSmasherBoss {
       enteredStaggered: false,
       point: origin.clone().addScaledVector(dir, maxDist),
     };
-    if (!this.group.visible || this.state.phase === 'DORMANT' || this.state.phase === 'EXECUTED') {
+    if (
+      !this.group.visible ||
+      (this.state.phase !== 'PHASE_1' && this.state.phase !== 'PHASE_2' && this.state.phase !== 'PHASE_3')
+    ) {
       return empty;
     }
 
+    this.group.updateMatrixWorld(true);
     this.raycaster.set(origin, dir);
     this.raycaster.near = 0.05;
     this.raycaster.far = maxDist;
@@ -631,18 +677,39 @@ export class RikhardSmasherBoss {
     };
   }
 
-  applyMeleeDamage(origin: THREE.Vector3, range: number, damage: number): SmasherHitResult {
-    const dist = origin.distanceTo(this.group.position.clone().add(new THREE.Vector3(0, 1.5, 0)));
-    if (dist > range + 1.2 || !this.group.visible) {
-      return {
-        hit: false,
-        headshot: false,
-        damage: 0,
-        enteredPhase2: false,
-        enteredPhase3: false,
-        enteredStaggered: false,
-        point: this.group.position.clone(),
-      };
+  applyMeleeDamage(
+    origin: THREE.Vector3,
+    range: number,
+    damage: number,
+    forward?: THREE.Vector3,
+    physics?: PhysicsWorld,
+  ): SmasherHitResult {
+    const empty: SmasherHitResult = {
+      hit: false,
+      headshot: false,
+      damage: 0,
+      enteredPhase2: false,
+      enteredPhase3: false,
+      enteredStaggered: false,
+      point: this.group.position.clone(),
+    };
+    if (
+      !this.group.visible ||
+      (this.state.phase !== 'PHASE_1' && this.state.phase !== 'PHASE_2' && this.state.phase !== 'PHASE_3')
+    ) {
+      return empty;
+    }
+    const bossCenter = this.group.position.clone().add(new THREE.Vector3(0, 1.5, 0));
+    const toBoss = bossCenter.clone().sub(origin);
+    const dist = toBoss.length();
+    if (dist > range + 1.2) {
+      return empty;
+    }
+    if (forward && dist > 1.8 && toBoss.normalize().dot(forward) < 0.35) {
+      return empty;
+    }
+    if (physics && !physics.hasLineOfSight(origin, bossCenter)) {
+      return empty;
     }
     const res = this.state.applyDamage(damage);
     this.flashTimer = 0.12;
@@ -672,7 +739,7 @@ export class RikhardSmasherBoss {
     for (let i = 0; i < count; i++) {
       const color = i % 2 === 0 ? 0x00f0ff : 0xfcee0a;
       const spark = new THREE.Mesh(
-        new THREE.BoxGeometry(0.06, 0.06, 0.14),
+        this.sparkGeo,
         new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 }),
       );
       spark.position.set(
@@ -692,7 +759,7 @@ export class RikhardSmasherBoss {
 
   private spawnAfterimage(pos: THREE.Vector3): void {
     const ghost = new THREE.Mesh(
-      new THREE.BoxGeometry(1.5, 2.9, 1.0),
+      this.ghostGeo,
       new THREE.MeshBasicMaterial({
         color: 0x00f0ff,
         transparent: true,
@@ -707,7 +774,7 @@ export class RikhardSmasherBoss {
 
   private spawnShockwave(): void {
     const ring = new THREE.Mesh(
-      new THREE.RingGeometry(1.0, 1.75, 28),
+      this.shockwaveGeo,
       new THREE.MeshBasicMaterial({
         color: 0xff003c,
         side: THREE.DoubleSide,
@@ -717,8 +784,9 @@ export class RikhardSmasherBoss {
     );
     ring.rotation.x = -Math.PI / 2;
     ring.position.set(this.group.position.x, this.arenaFloorY + 0.15, this.group.position.z);
+    ring.scale.setScalar(0.4 / 1.4);
     this.scene.add(ring);
-    this.shockwaves.push({ mesh: ring, radius: 1.4, maxRadius: 24, damagedPlayer: false });
+    this.shockwaves.push({ mesh: ring, radius: 0.4, maxRadius: 24, damagedPlayer: false });
   }
 
   update(
@@ -825,10 +893,7 @@ export class RikhardSmasherBoss {
         playerEye.z - start.z + (Math.random() - 0.5) * 0.8,
       ).normalize();
 
-      const mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(0.16, 6, 6),
-        new THREE.MeshBasicMaterial({ color: p3 ? 0x00f0ff : 0xff4400 }),
-      );
+      const mesh = new THREE.Mesh(this.projGeo, p3 ? this.projMatP3 : this.projMatNormal);
       mesh.position.copy(start);
       this.scene.add(mesh);
       this.projectiles.push({ mesh, velocity: dir.multiplyScalar(36), damage: p3 ? 16 : 13, life: 2.5 });
@@ -840,20 +905,14 @@ export class RikhardSmasherBoss {
       this.missileTimer = p3 ? 3.2 : p2 ? 4.4 : 5.6;
       const count = p3 ? 3 : 2;
       for (let i = 0; i < count; i++) {
-        const tx = playerPos.x + (Math.random() - 0.5) * 6;
-        const tz = playerPos.z + (Math.random() - 0.5) * 6;
-        const ring = new THREE.Mesh(
-          new THREE.RingGeometry(1.6, 2.2, 20),
-          new THREE.MeshBasicMaterial({ color: 0xff003c, side: THREE.DoubleSide, transparent: true, opacity: 0.78 }),
-        );
+        const tx = Math.max(-19.5, Math.min(19.5, playerPos.x + (Math.random() - 0.5) * 6));
+        const tz = Math.max(-95.5, Math.min(-35.5, playerPos.z + (Math.random() - 0.5) * 6));
+        const ring = new THREE.Mesh(this.missileRingGeo, this.missileRingMat);
         ring.rotation.x = -Math.PI / 2;
         ring.position.set(tx, this.arenaFloorY + 0.08, tz);
         this.scene.add(ring);
 
-        const missile = new THREE.Mesh(
-          new THREE.ConeGeometry(0.18, 0.7, 6),
-          new THREE.MeshBasicMaterial({ color: 0xfcee0a }),
-        );
+        const missile = new THREE.Mesh(this.missileConeGeo, this.missileConeMat);
         const startPos = this.group.position.clone().add(new THREE.Vector3(-0.9, 3.1, 0));
         missile.position.copy(startPos);
         this.scene.add(missile);
@@ -876,12 +935,17 @@ export class RikhardSmasherBoss {
         this.dashTimer = p3 ? 3.6 : 5.2;
         callbacks.onRoar();
         for (let step = 0; step < 3; step++) {
+          const remDx = playerPos.x - this.group.position.x;
+          const remDz = playerPos.z - this.group.position.z;
+          const remDist = Math.hypot(remDx, remDz);
+          if (remDist <= 4.6) break;
           this.spawnAfterimage(this.group.position.clone());
-          const angle = Math.atan2(dx, dz) + (step - 1) * 0.45;
+          const angle = Math.atan2(remDx, remDz) + (step - 1) * 0.42;
+          const stepDist = Math.min(4.5, remDist - 4.2);
           const res = physics.resolveCylinderMove(
             this.group.position,
-            this.group.position.x + Math.sin(angle) * 4.5,
-            this.group.position.z + Math.cos(angle) * 4.5,
+            this.group.position.x + Math.sin(angle) * stepDist,
+            this.group.position.z + Math.cos(angle) * stepDist,
             1.1,
             this.arenaFloorY,
             3.0,
@@ -919,11 +983,33 @@ export class RikhardSmasherBoss {
 
       p.life -= dt;
       const next = p.mesh.position.clone().addScaledVector(p.velocity, dt);
-      const wall = physics.raycastBullets(p.mesh.position, p.velocity.clone().normalize(), p.mesh.position.distanceTo(next));
+      const stepDist = p.mesh.position.distanceTo(next);
+      const wall = physics.raycastBullets(p.mesh.position, p.velocity.clone().normalize(), stepDist);
+
+      const segDx = next.x - p.mesh.position.x;
+      const segDz = next.z - p.mesh.position.z;
+      const segLenSq2D = segDx * segDx + segDz * segDz;
+      const tProj =
+        segLenSq2D > 1e-8
+          ? Math.max(
+              0,
+              Math.min(
+                1,
+                ((playerPos.x - p.mesh.position.x) * segDx + (playerPos.z - p.mesh.position.z) * segDz) /
+                  segLenSq2D,
+              ),
+            )
+          : 1;
+      const closestX = p.mesh.position.x + segDx * tProj;
+      const closestY = p.mesh.position.y + (next.y - p.mesh.position.y) * tProj;
+      const closestZ = p.mesh.position.z + segDz * tProj;
+      const distAlongStep = tProj * stepDist;
+
       const hitP =
-        Math.hypot(next.x - playerPos.x, next.z - playerPos.z) < 0.78 &&
-        next.y >= playerPos.y &&
-        next.y <= playerPos.y + 2.0;
+        Math.hypot(closestX - playerPos.x, closestZ - playerPos.z) < 0.78 &&
+        closestY >= playerPos.y &&
+        closestY <= playerPos.y + 2.0 &&
+        (!wall.hit || distAlongStep <= wall.distance);
 
       if (hitP) {
         const dmg = p.damage;
@@ -988,6 +1074,7 @@ export class RikhardSmasherBoss {
 
       if (sw.radius >= sw.maxRadius) {
         this.scene.remove(sw.mesh);
+        (sw.mesh.material as THREE.Material).dispose();
         this.shockwaves.splice(i, 1);
       }
 
@@ -1002,6 +1089,7 @@ export class RikhardSmasherBoss {
       (g.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, (g.life / g.maxLife) * 0.48);
       if (g.life <= 0) {
         this.scene.remove(g.mesh);
+        (g.mesh.material as THREE.Material).dispose();
         this.ghosts.splice(i, 1);
       }
     }
@@ -1014,6 +1102,7 @@ export class RikhardSmasherBoss {
       (s.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, s.life / s.maxLife);
       if (s.life <= 0) {
         this.scene.remove(s.mesh);
+        (s.mesh.material as THREE.Material).dispose();
         this.sparks.splice(i, 1);
       }
     }

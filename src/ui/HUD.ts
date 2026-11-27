@@ -13,12 +13,14 @@ import {
 import type { ChunkStats } from '../engine/ChunkManager';
 import type { CityBlockRect } from '../game/CyberAlmatyWorld';
 import { OPEN_WORLD_GIGS, RIPPERDOC_CATALOG, type OpenWorldState, type RipperdocItem } from '../game/OpenWorldSystem';
+import { formatDialogueText } from '../game/DialogueLibrary';
 import { WEAPON_ORDER, WEAPON_SPECS, type ArsenalState } from '../game/WeaponSystem';
 import type { PlayerState } from '../game/Player';
 
 export interface HudCallbacks {
   onStartCampaign: () => void;
   onStartFreeRoam: () => void;
+  onContinuePostgame: () => void;
   onJumpToAct: (act: GameAct) => void;
   onResume: () => void;
   onRestartCheckpoint: () => void;
@@ -48,6 +50,7 @@ const CHAPTER_LIST: Array<{ act: GameAct; label: string }> = [
 
 export class HUD {
   private callbacks: HudCallbacks;
+  private censored = false;
 
   private intertitleOverlay = document.getElementById('intertitle-overlay')!;
   private intertitleTag = document.getElementById('intertitle-tag')!;
@@ -160,6 +163,29 @@ export class HUD {
     this.populateFastTravel();
   }
 
+  private fmt(text: string): string {
+    return formatDialogueText(text, this.censored);
+  }
+
+  setCensored(censored: boolean): void {
+    this.censored = censored;
+    this.lastObjectiveText = '';
+    this.lastDistrictKey = '';
+    this.lastPromptLabel = null;
+    this.lastRelicKey = '0';
+    this.lastHuyeshiKey = '0';
+    this.populateChapters();
+    this.populateFastTravel();
+    const titleSub = this.titleScreen.querySelector('.title-sub');
+    if (titleSub) {
+      titleSub.textContent = this.fmt('ЛЕГЕНДЫ ЕБЛАНХАНЫ // 2077 • ALMATY OPEN-WORLD FPS');
+    }
+    const mapHeading = this.mapScreen.querySelector('h2');
+    if (mapHeading) {
+      mapHeading.textContent = this.fmt('КАРТА КИБЕР-АЛМАТЫ // ЕБЛАНХАНА');
+    }
+  }
+
   private bindUI(): void {
     document.getElementById('btn-start-campaign')?.addEventListener('click', () => this.callbacks.onStartCampaign());
     document.getElementById('btn-start-freeroam')?.addEventListener('click', () => this.callbacks.onStartFreeRoam());
@@ -171,7 +197,7 @@ export class HUD {
     document.getElementById('btn-to-title')?.addEventListener('click', () => this.callbacks.onReturnTitle());
     document.getElementById('btn-close-map')?.addEventListener('click', () => this.callbacks.onCloseMap());
     document.getElementById('btn-close-ripper')?.addEventListener('click', () => this.callbacks.onCloseRipperdoc());
-    document.getElementById('btn-postgame-freeroam')?.addEventListener('click', () => this.callbacks.onStartFreeRoam());
+    document.getElementById('btn-postgame-freeroam')?.addEventListener('click', () => this.callbacks.onContinuePostgame());
     document.getElementById('btn-credits-title')?.addEventListener('click', () => this.callbacks.onReturnTitle());
 
     const sensInput = document.getElementById('opt-sens') as HTMLInputElement | null;
@@ -189,7 +215,7 @@ export class HUD {
     for (const ch of CHAPTER_LIST) {
       const btn = document.createElement('button');
       btn.className = 'cyber-btn ghost small';
-      btn.textContent = ch.label;
+      btn.textContent = this.fmt(ch.label);
       btn.addEventListener('click', () => this.callbacks.onJumpToAct(ch.act));
       this.chapterPicker.appendChild(btn);
     }
@@ -200,7 +226,7 @@ export class HUD {
     for (const d of DISTRICTS) {
       const btn = document.createElement('button');
       btn.className = 'cyber-btn secondary small';
-      btn.textContent = `🚕 ${d.name}`;
+      btn.textContent = `🚕 ${this.fmt(d.name)}`;
       btn.addEventListener('click', () => this.callbacks.onFastTravel(d.id));
       this.fastTravelList.appendChild(btn);
     }
@@ -219,9 +245,9 @@ export class HUD {
   }
 
   showIntertitle(title: string, subtitle = '', tag = '', durationSec = 3.2): void {
-    this.intertitleTag.textContent = tag;
-    this.intertitleTitle.textContent = title;
-    this.intertitleSub.textContent = subtitle;
+    this.intertitleTag.textContent = this.fmt(tag);
+    this.intertitleTitle.textContent = this.fmt(title);
+    this.intertitleSub.textContent = this.fmt(subtitle);
     this.intertitleOverlay.classList.add('visible');
     this.intertitleOverlay.setAttribute('aria-hidden', 'false');
     this.intertitleTimer = durationSec;
@@ -234,23 +260,26 @@ export class HUD {
   }
 
   setObjective(text: string): void {
-    if (text === this.lastObjectiveText) return;
-    this.lastObjectiveText = text;
-    this.objectiveText.textContent = text;
+    const formatted = this.fmt(text);
+    if (formatted === this.lastObjectiveText) return;
+    this.lastObjectiveText = formatted;
+    this.objectiveText.textContent = formatted;
   }
 
   showActBanner(text: string, duration = 4.0): void {
-    this.actBanner.textContent = text;
+    this.actBanner.textContent = this.fmt(text);
     this.actBanner.classList.remove('hidden');
     this.actBannerTimer = duration;
   }
 
   setDistrict(name: string, subtitle: string): void {
-    const key = `${name}|${subtitle}`;
+    const fn = this.fmt(name);
+    const fs = this.fmt(subtitle);
+    const key = `${fn}|${fs}`;
     if (key === this.lastDistrictKey) return;
     this.lastDistrictKey = key;
-    this.districtName.textContent = name;
-    this.districtSub.textContent = subtitle;
+    this.districtName.textContent = fn;
+    this.districtSub.textContent = fs;
   }
 
   setChunkStats(stats: ChunkStats, inOpenWorld: boolean): void {
@@ -265,9 +294,9 @@ export class HUD {
   }
 
   showSubtitle(ev: SubtitleEvent): void {
-    this.subSpeaker.textContent = ev.speakerName;
-    this.subRole.textContent = ev.role;
-    this.subText.textContent = ev.text;
+    this.subSpeaker.textContent = this.fmt(ev.speakerName);
+    this.subRole.textContent = this.fmt(ev.role);
+    this.subText.textContent = this.fmt(ev.text);
     this.subtitleBox.classList.remove('hidden');
     this.subtitleTimer = ev.duration;
   }
@@ -297,23 +326,26 @@ export class HUD {
     }
     const clamped = Math.max(0, Math.min(1, ratio));
     const pctStr = (clamped * 100).toFixed(1);
-    const key = `1|${pctStr}|${label}`;
+    const fl = this.fmt(label);
+    const key = `1|${pctStr}|${fl}`;
     if (key === this.lastHuyeshiKey) return;
     this.lastHuyeshiKey = key;
     this.huyeshiBar.classList.remove('hidden');
-    this.huyeshiLabel.textContent = label;
+    this.huyeshiLabel.textContent = fl;
     this.huyeshiPct.textContent = `${Math.round(clamped * 100)}%`;
     this.huyeshiFill.style.width = `${pctStr}%`;
   }
 
   showChoices(title: string, choices: DialogueChoice[]): void {
-    this.choiceTitle.textContent = title;
+    this.choiceTitle.textContent = this.fmt(title);
     this.choiceList.innerHTML = '';
     for (const c of choices) {
       const btn = document.createElement('button');
       btn.className = 'choice-btn';
       btn.disabled = Boolean(c.disabled);
-      btn.innerHTML = `<strong>[${c.key}]</strong> ${c.text}${c.subtext ? `<small>${c.subtext}</small>` : ''}`;
+      const cText = this.fmt(c.text);
+      const cSub = c.subtext ? this.fmt(c.subtext) : '';
+      btn.innerHTML = `<strong>[${c.key}]</strong> ${cText}${cSub ? `<small>${cSub}</small>` : ''}`;
       if (!c.disabled) {
         btn.addEventListener('click', () => this.callbacks.onChoiceSelect(c.id));
       }
@@ -327,10 +359,11 @@ export class HUD {
   }
 
   setInteractPrompt(label: string | null): void {
-    if (label === this.lastPromptLabel) return;
-    this.lastPromptLabel = label;
-    if (label) {
-      this.interactPrompt.textContent = label;
+    const formatted = label ? this.fmt(label) : null;
+    if (formatted === this.lastPromptLabel) return;
+    this.lastPromptLabel = formatted;
+    if (formatted) {
+      this.interactPrompt.textContent = formatted;
       this.interactPrompt.classList.remove('hidden');
     } else {
       this.interactPrompt.classList.add('hidden');
@@ -338,11 +371,12 @@ export class HUD {
   }
 
   setRelicWarning(visible: boolean, text = 'СБОЙ БИОЧИПА // КОНСТРУКТ: САМИР'): void {
-    const key = visible ? `1|${text}` : '0';
+    const ft = this.fmt(text);
+    const key = visible ? `1|${ft}` : '0';
     if (key === this.lastRelicKey) return;
     this.lastRelicKey = key;
     if (visible) {
-      this.relicWarning.textContent = text;
+      this.relicWarning.textContent = ft;
       this.relicWarning.classList.remove('hidden');
     } else {
       this.relicWarning.classList.add('hidden');
@@ -459,19 +493,27 @@ export class HUD {
       const owned =
         (item.weaponId && unlockedWeapons.has(item.weaponId)) ||
         (item.upgradeKey && player.upgrades[item.upgradeKey]);
+      const isFullConsumable =
+        item.id === 'cons_maxdoc' &&
+        player.maxDocCharges >= player.maxMaxDoc &&
+        player.armor >= player.maxArmor;
 
       const card = document.createElement('div');
       card.className = 'ripper-item';
       card.innerHTML = `
         <div>
-          <h4>${item.name}</h4>
-          <p>${item.description}</p>
+          <h4>${this.fmt(item.name)}</h4>
+          <p>${this.fmt(item.description)}</p>
         </div>
       `;
       const btn = document.createElement('button');
-      btn.className = owned ? 'cyber-btn ghost small' : 'cyber-btn secondary small';
-      btn.disabled = Boolean(owned) || player.tenge < item.cost;
-      btn.textContent = owned ? 'УСТАНОВЛЕНО' : `КУПИТЬ ЗА ${item.cost} ₸`;
+      btn.className = owned || isFullConsumable ? 'cyber-btn ghost small' : 'cyber-btn secondary small';
+      btn.disabled = Boolean(owned) || isFullConsumable || player.tenge < item.cost;
+      btn.textContent = owned
+        ? 'УСТАНОВЛЕНО'
+        : isFullConsumable
+          ? 'ЗАПАС ПОЛОН'
+          : `КУПИТЬ ЗА ${item.cost} ₸`;
       btn.addEventListener('click', () => this.callbacks.onBuyRipperItem(item));
       card.appendChild(btn);
       this.ripperItemsEl.appendChild(card);
@@ -486,10 +528,10 @@ export class HUD {
       card.className = `gig-card ${openWorld.trackedGigId === def.id ? 'tracked' : ''} ${rt?.status === 'completed' ? 'completed' : ''}`;
       card.innerHTML = `
         <div class="gig-card-title">
-          <span>${rt?.status === 'completed' ? '✓ ' : ''}${def.title}</span>
+          <span>${rt?.status === 'completed' ? '✓ ' : ''}${this.fmt(def.title)}</span>
           <span>${def.rewardTenge} ₸</span>
         </div>
-        <div class="gig-card-desc">${def.description}</div>
+        <div class="gig-card-desc">${this.fmt(def.description)}</div>
       `;
       if (rt?.status !== 'completed') {
         card.addEventListener('click', () => this.callbacks.onTrackGig(def.id));
@@ -626,6 +668,7 @@ export class HUD {
     buildings: CityBlockRect[],
     openWorld: OpenWorldState,
     objectivePos: Vec3 | null,
+    enemies: Array<{ x: number; y: number; z: number }> = [],
   ): void {
     const ctx = this.fullmapCtx;
     const w = this.fullmapCanvas.width;
@@ -685,7 +728,17 @@ export class HUD {
     for (const d of DISTRICTS) {
       const p = toPx(d.fastTravelPos.x, d.fastTravelPos.z);
       ctx.fillStyle = d.color;
-      ctx.fillText(d.name, p.x, p.y - 10);
+      ctx.fillText(this.fmt(d.name), p.x, p.y - 10);
+    }
+
+    // Active enemies matching map legend
+    ctx.fillStyle = '#ff3344';
+    for (const e of enemies) {
+      if (Math.abs(e.y - playerPos.y) > 40) continue;
+      const ep = toPx(e.x, e.z);
+      ctx.beginPath();
+      ctx.arc(ep.x, ep.y, 3.5, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     // Gigs
@@ -724,24 +777,27 @@ export class HUD {
 
   showCredits(stats: RunStats): void {
     if (stats.endingId === 'taldykorgan') {
-      this.endingTitle.textContent = 'КОНЦОВКА II: ДОРОГА В ТАЛДЫКОРГАН';
-      this.endingSummary.textContent =
-        'Аи отдал своё тело Самиру. Получив второй шанс на полноценную жизнь, Самир прощается с Кибер-Алматы и уезжает навстречу рассвету в город-ад Талдыкорган.';
+      this.endingTitle.textContent = this.fmt('КОНЦОВКА II: ДОРОГА В ТАЛДЫКОРГАН');
+      this.endingSummary.textContent = this.fmt(
+        'Аи отдал своё тело Самиру. Получив второй шанс на полноценную жизнь, Самир прощается с Кибер-Алматы и уезжает навстречу рассвету в город-ад Талдыкорган.',
+      );
     } else {
-      this.endingTitle.textContent = 'КОНЦОВКА I: ЛЕГЕНДА ЕБЛАНХАНЫ';
-      this.endingSummary.textContent =
-        'Аи вернулся в своё тело и стал живой легендой Ебланханы — владельцем антикафе «Марум». Приняв контракт Егора на Вечную войну, он встречает последние полгода так, как подобает легенде.';
+      this.endingTitle.textContent = this.fmt('КОНЦОВКА I: ЛЕГЕНДА ЕБЛАНХАНЫ');
+      this.endingSummary.textContent = this.fmt(
+        'Аи вернулся в своё тело и стал живой легендой Ебланханы — владельцем антикафе «Марум». Приняв контракт Егора на Вечную войну, он встречает последние полгода так, как подобает легенде.',
+      );
     }
 
     const mins = Math.floor(stats.elapsedSec / 60);
     const secs = Math.floor(stats.elapsedSec % 60);
     const accuracy = stats.shotsFired > 0 ? Math.round((stats.shotsHit / stats.shotsFired) * 100) : 0;
-    const approachLabel =
+    const approachLabel = this.fmt(
       stats.assaultApproach === 'netrunner'
         ? 'НЕТРАННЕР'
         : stats.assaultApproach === 'eblanhana'
           ? 'ЕБЛАНХАНА'
-          : 'ПРОРЫВ 2026';
+          : 'ПРОРЫВ 2026',
+    );
 
     this.statsGrid.innerHTML = `
       <div class="stat-card"><span>ВРЕМЯ В ИГРЕ</span><strong>${mins}м ${secs}с</strong></div>
@@ -750,7 +806,7 @@ export class HUD {
       <div class="stat-card"><span>ВРАГОВ УСТРАНЕНО</span><strong>${stats.enemiesEliminated}</strong></div>
       <div class="stat-card"><span>УБИЙСТВ КЛИНКАМИ</span><strong>${stats.meleeKills}</strong></div>
       <div class="stat-card"><span>ТОЧНОСТЬ / ХЕДШОТЫ</span><strong>${accuracy}% / ${stats.headshots}</strong></div>
-      <div class="stat-card"><span>ЗАКАЗОВ ЕБЛАНХАНЫ</span><strong>${stats.gigsCompleted} / 5</strong></div>
+      <div class="stat-card"><span>${this.fmt('ЗАКАЗОВ ЕБЛАНХАНЫ')}</span><strong>${stats.gigsCompleted} / 5</strong></div>
       <div class="stat-card"><span>ПРОЕХАНО НА КИБЕР-АХМЕДЕ</span><strong>${Math.round(stats.distanceDrivenMeters)} м</strong></div>
     `;
     this.showScreen('CREDITS');

@@ -97,6 +97,7 @@ export class InputManager {
     if (e.code === 'KeyM' || e.code === 'Tab') {
       e.preventDefault();
       if (!e.repeat) {
+        this.justPressed.add(e.code);
         this.onMapKey?.();
       }
       return;
@@ -268,6 +269,7 @@ export class InputManager {
 
   clearTransient(): void {
     this.justPressed.clear();
+    this.mouseDown = false;
     this.mouseJustPressed = false;
     this.rightMouseJustPressed = false;
     this.rightMouseDown = false;

@@ -93,5 +93,43 @@ describe('OpenWorldState, Districts, and Dialogue Censorship', () => {
     expect(highSync.map((l) => l.text).join(' ')).not.toBe(
       lowSync.map((l) => l.text).join(' '),
     );
+
+    const inflected = formatDialogueText('Держи Ебланхану и грёбаный кусок дерьма в ебланхана.', true);
+    expect(inflected).not.toContain('Ебланхану');
+    expect(inflected).not.toContain('ебланхана');
+    expect(inflected).not.toContain('грёбаный');
+    expect(inflected).not.toContain('дерьма');
+  });
+
+  it('decelerates smoothly after nitro ends and steers autopilot around blocking obstacles', () => {
+    const physics = new PhysicsWorld();
+    const car = new CyberAkhmedState();
+    car.setPose(0, 0, 0, 0);
+
+    // Boost past normal maxSpeed (34 m/s)
+    for (let i = 0; i < 40; i++) {
+      car.step(0.05, 1, 0, false, true, physics);
+    }
+    const peakSpeed = car.speed;
+    expect(peakSpeed).toBeGreaterThan(car.maxSpeed + 4);
+
+    // Release nitro while holding throttle: must decay smoothly instead of snapping straight to 34
+    car.step(0.05, 1, 0, false, false, physics);
+    expect(car.speed).toBeGreaterThan(car.maxSpeed + 2);
+    expect(car.speed).toBeLessThan(peakSpeed);
+
+    // Obstacle directly between car (0,0,0) and target (0,0,-55)
+    physics.addBox('mid_block', 0, 5, -22, 10, 10, 10);
+    car.setPose(0, 0, 0, 0);
+    car.startAutopilot({ x: 0, y: 0, z: -55 });
+    let arrived = false;
+    for (let i = 0; i < 240; i++) {
+      const r = car.step(0.05, 0, 0, false, false, physics);
+      if (r.arrivedAutopilot) {
+        arrived = true;
+        break;
+      }
+    }
+    expect(arrived).toBe(true);
   });
 });

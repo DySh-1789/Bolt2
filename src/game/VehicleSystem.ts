@@ -20,6 +20,11 @@ export class CyberAkhmedState {
   autopilotTarget: Vec3 | null = null;
   thirdPersonCamera = true;
 
+  private autopilotRecoveryTimer = 0;
+  private autopilotRecoveryDir = 1;
+  private autopilotAvoidTimer = 0;
+  private autopilotAvoidDir = -1;
+
   readonly maxSpeed = 34; // ~122 km/h
   readonly maxNitroSpeed = 48; // ~172 km/h
   readonly maxReverseSpeed = -12;
@@ -32,16 +37,23 @@ export class CyberAkhmedState {
     this.yaw = yaw;
     this.speed = 0;
     this.autopilotActive = false;
+    this.autopilotTarget = null;
+    this.autopilotRecoveryTimer = 0;
+    this.autopilotAvoidTimer = 0;
   }
 
   startAutopilot(target: Vec3): void {
     this.autopilotTarget = { ...target };
     this.autopilotActive = true;
+    this.autopilotRecoveryTimer = 0;
+    this.autopilotAvoidTimer = 0;
   }
 
   stopAutopilot(): void {
     this.autopilotActive = false;
     this.autopilotTarget = null;
+    this.autopilotRecoveryTimer = 0;
+    this.autopilotAvoidTimer = 0;
   }
 
   getSpeedKmh(): number {
@@ -76,6 +88,10 @@ export class CyberAkhmedState {
         this.stopAutopilot();
         this.speed *= 0.4;
         arrivedAutopilot = true;
+      } else if (this.autopilotRecoveryTimer > 0) {
+        this.autopilotRecoveryTimer = Math.max(0, this.autopilotRecoveryTimer - dt);
+        effThrottle = -0.65;
+        effSteer = this.autopilotRecoveryDir;
       } else {
         const desiredYaw = Math.atan2(-dx, -dz);
         let diff = desiredYaw - this.yaw;
@@ -83,6 +99,45 @@ export class CyberAkhmedState {
         while (diff < -Math.PI) diff += Math.PI * 2;
         effSteer = Math.max(-1, Math.min(1, -diff * 2.2));
         effThrottle = dist > 22 ? 0.85 : 0.45;
+
+        // 5-whisker body-width obstacle avoidance with committed turn clearance
+        const origin: Vec3 = { x: this.x, y: this.y + 0.85, z: this.z };
+        const whiskerRange = 16;
+        const castDist = (angle: number): number => {
+          const hit = physics.raycast(
+            origin,
+            { x: -Math.sin(angle), y: 0, z: -Math.cos(angle) },
+            whiskerRange,
+            true,
+          );
+          return hit.hit ? hit.distance : whiskerRange;
+        };
+
+        const centerDist = castDist(this.yaw);
+        const innerLDist = castDist(this.yaw + 0.24);
+        const innerRDist = castDist(this.yaw - 0.24);
+        const outerLDist = castDist(this.yaw + 0.62);
+        const outerRDist = castDist(this.yaw - 0.62);
+
+        const frontMin = Math.min(centerDist, innerLDist, innerRDist);
+        if (frontMin < 13) {
+          if (this.autopilotAvoidTimer <= 0) {
+            const leftScore = innerLDist + outerLDist;
+            const rightScore = innerRDist + outerRDist;
+            this.autopilotAvoidDir = leftScore >= rightScore ? -1 : 1;
+          }
+          this.autopilotAvoidTimer = 0.55;
+          effSteer = this.autopilotAvoidDir;
+          effThrottle = Math.min(effThrottle, frontMin < 6 ? 0.35 : 0.65);
+        } else if (this.autopilotAvoidTimer > 0) {
+          this.autopilotAvoidTimer = Math.max(0, this.autopilotAvoidTimer - dt);
+          effSteer = this.autopilotAvoidDir * 0.7;
+          effThrottle = Math.max(effThrottle, 0.65);
+        } else if (outerLDist < 9.5) {
+          effSteer = Math.max(effSteer, 0.75);
+        } else if (outerRDist < 9.5) {
+          effSteer = Math.min(effSteer, -0.75);
+        }
       }
     }
 
@@ -99,7 +154,11 @@ export class CyberAkhmedState {
     if (handbrake) {
       this.speed += (0 - this.speed) * Math.min(1, dt * 6.5);
     } else if (effThrottle > 0) {
-      this.speed = Math.min(topSpeed, this.speed + effThrottle * accel * dt);
+      if (this.speed > topSpeed) {
+        this.speed = Math.max(topSpeed, this.speed - 14 * dt);
+      } else {
+        this.speed = Math.min(topSpeed, this.speed + effThrottle * accel * dt);
+      }
     } else if (effThrottle < 0) {
       if (this.speed > 1.5) {
         this.speed = Math.max(0, this.speed + effThrottle * 32 * dt);
@@ -134,6 +193,26 @@ export class CyberAkhmedState {
     this.z = res.z;
     if (res.collided) {
       this.speed *= 0.45;
+      if (this.autopilotActive && this.autopilotRecoveryTimer <= 0) {
+        const origin: Vec3 = { x: this.x, y: this.y + 0.85, z: this.z };
+        const leftHit = physics.raycast(
+          origin,
+          { x: -Math.sin(this.yaw + 0.7), y: 0, z: -Math.cos(this.yaw + 0.7) },
+          12,
+          true,
+        );
+        const rightHit = physics.raycast(
+          origin,
+          { x: -Math.sin(this.yaw - 0.7), y: 0, z: -Math.cos(this.yaw - 0.7) },
+          12,
+          true,
+        );
+        const leftDist = leftHit.hit ? leftHit.distance : 12;
+        const rightDist = rightHit.hit ? rightHit.distance : 12;
+        // Reversing with positive steer swings nose right; pick opposite to open side
+        this.autopilotRecoveryDir = leftDist >= rightDist ? 1 : -1;
+        this.autopilotRecoveryTimer = 0.55;
+      }
     }
 
     const movedMeters = Math.hypot(this.x - prevX, this.z - prevZ);
@@ -264,11 +343,30 @@ export class VehicleSystem {
   /**
    * Summons Cyber-Akhmed to the nearest clear road offset near the player!
    */
-  summonNear(playerX: number, playerZ: number, playerYaw: number): void {
+  summonNear(playerX: number, playerZ: number, playerYaw: number, physics?: PhysicsWorld): void {
     const fwdX = -Math.sin(playerYaw);
     const fwdZ = -Math.cos(playerYaw);
-    const targetX = Math.max(-WORLD_HALF + 14, Math.min(WORLD_HALF - 14, playerX + fwdX * 8));
-    const targetZ = Math.max(-WORLD_HALF + 14, Math.min(WORLD_HALF - 14, playerZ + fwdZ * 8));
+    let targetX = Math.max(-WORLD_HALF + 14, Math.min(WORLD_HALF - 14, playerX + fwdX * 8));
+    let targetZ = Math.max(-WORLD_HALF + 14, Math.min(WORLD_HALF - 14, playerZ + fwdZ * 8));
+    if (physics) {
+      const clear = physics.findNearestClearPosition(
+        targetX,
+        targetZ,
+        this.state.radius + 0.35,
+        0.35,
+        1.6,
+        {
+          minX: -WORLD_HALF + 10,
+          maxX: WORLD_HALF - 10,
+          minZ: -WORLD_HALF + 10,
+          maxZ: WORLD_HALF - 10,
+          maxRadius: 24,
+          step: 2.0,
+        },
+      );
+      targetX = clear.x;
+      targetZ = clear.z;
+    }
     this.state.setPose(targetX, 0, targetZ, playerYaw + Math.PI * 0.5);
     this.syncMesh();
   }
@@ -278,13 +376,48 @@ export class VehicleSystem {
     return Math.hypot(px - this.state.x, pz - this.state.z) < 5.2;
   }
 
-  getExitPosition(): Vec3 {
+  getExitPosition(physics?: PhysicsWorld): Vec3 {
     const rightX = Math.cos(this.state.yaw);
     const rightZ = -Math.sin(this.state.yaw);
+    const fwdX = -Math.sin(this.state.yaw);
+    const fwdZ = -Math.cos(this.state.yaw);
+    const clamp = (v: number) => Math.max(-WORLD_HALF + 4, Math.min(WORLD_HALF - 4, v));
+
+    const candidates: Array<{ x: number; z: number }> = [
+      { x: clamp(this.state.x - rightX * 2.8), z: clamp(this.state.z - rightZ * 2.8) },
+      { x: clamp(this.state.x + rightX * 2.8), z: clamp(this.state.z + rightZ * 2.8) },
+      { x: clamp(this.state.x - fwdX * 3.4), z: clamp(this.state.z - fwdZ * 3.4) },
+      { x: clamp(this.state.x + fwdX * 3.4), z: clamp(this.state.z + fwdZ * 3.4) },
+    ];
+
+    if (physics) {
+      for (const c of candidates) {
+        if (physics.isCylinderFree(c.x, c.z, 0.48, this.state.y + 0.1, 1.75)) {
+          return { x: c.x, y: this.state.y, z: c.z };
+        }
+      }
+      const fallback = physics.findNearestClearPosition(
+        candidates[0].x,
+        candidates[0].z,
+        0.48,
+        this.state.y + 0.1,
+        1.75,
+        {
+          minX: -WORLD_HALF + 4,
+          maxX: WORLD_HALF - 4,
+          minZ: -WORLD_HALF + 4,
+          maxZ: WORLD_HALF - 4,
+          maxRadius: 16,
+          step: 1.5,
+        },
+      );
+      return { x: fallback.x, y: this.state.y, z: fallback.z };
+    }
+
     return {
-      x: this.state.x - rightX * 2.8,
+      x: candidates[0].x,
       y: this.state.y,
-      z: this.state.z - rightZ * 2.8,
+      z: candidates[0].z,
     };
   }
 
@@ -331,7 +464,7 @@ export class VehicleSystem {
     input: InputSnapshot,
     physics: PhysicsWorld,
   ): { movedMeters: number; arrivedAutopilot: boolean; nitroActive: boolean; collided: boolean } {
-    if (input.cameraTogglePressed) {
+    if (this.state.occupied && input.cameraTogglePressed) {
       this.state.thirdPersonCamera = !this.state.thirdPersonCamera;
     }
 
@@ -348,10 +481,11 @@ export class VehicleSystem {
       w.rotation.x -= this.state.speed * dt * 2.2;
     }
 
+    const showFlames = this.state.occupied && res.nitroActive;
     for (const f of this.nitroFlames) {
       const mat = f.material as THREE.MeshBasicMaterial;
-      mat.opacity = res.nitroActive ? 0.78 + Math.random() * 0.2 : 0;
-      f.scale.setScalar(res.nitroActive ? 0.9 + Math.random() * 0.35 : 0.1);
+      mat.opacity = showFlames ? 0.78 + Math.random() * 0.2 : 0;
+      f.scale.setScalar(showFlames ? 0.9 + Math.random() * 0.35 : 0.1);
     }
 
     this.syncMesh();

@@ -48,6 +48,16 @@ export class PlayerState {
     }
   }
 
+  restoreForCheckpoint(): void {
+    this.recomputeStatsFromUpgrades();
+    this.hp = this.maxHp;
+    this.armor = this.maxArmor;
+    this.maxDocCharges = Math.max(this.maxDocCharges, Math.min(this.maxMaxDoc, 3));
+    this.sandevistanEnergy = 100;
+    this.sandevistanActive = false;
+    this.dashCooldown = 0;
+  }
+
   recomputeStatsFromUpgrades(): void {
     this.maxHp = this.upgrades.reinforcedPlating ? 150 : 100;
     this.maxArmor = this.upgrades.reinforcedPlating ? 100 : 50;
@@ -170,6 +180,7 @@ export class PlayerController {
   private headBobPhase = 0;
   private shakeIntensity = 0;
   private dashTimer = 0;
+  private dashSpeed = 23.5;
   private dashDir = new THREE.Vector3();
   private aimBlend = 0;
 
@@ -199,6 +210,7 @@ export class PlayerController {
     this.grounded = true;
     this.airJumpsUsed = 0;
     this.dashTimer = 0;
+    this.dashSpeed = 23.5;
     this.aimBlend = 0;
     this.shakeIntensity = 0;
     this.headBobPhase = 0;
@@ -215,6 +227,9 @@ export class PlayerController {
     this.velocity.y = 0;
     this.grounded = true;
     this.airJumpsUsed = 0;
+    if (this.mode === 'FREE') {
+      this.syncCamera(0);
+    }
   }
 
   setMode(mode: CameraMode): void {
@@ -249,11 +264,17 @@ export class PlayerController {
     this.yaw += yawRad;
   }
 
-  applyLungeImpulse(dir: THREE.Vector3, speed: number): void {
-    this.dashDir.copy(dir).setY(0).normalize();
-    this.dashTimer = 0.16;
-    this.velocity.x = this.dashDir.x * speed;
-    this.velocity.z = this.dashDir.z * speed;
+  applyLungeImpulse(dir: THREE.Vector3, speed: number, duration = 0.16): void {
+    this.dashDir.copy(dir).setY(0);
+    if (this.dashDir.lengthSq() > 1e-6) {
+      this.dashDir.normalize();
+    } else {
+      this.dashDir.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    }
+    this.dashSpeed = Math.max(8, speed);
+    this.dashTimer = Math.max(0.08, duration);
+    this.velocity.x = this.dashDir.x * this.dashSpeed;
+    this.velocity.z = this.dashDir.z * this.dashSpeed;
     if (this.grounded) {
       this.velocity.y = 3.2;
       this.grounded = false;
@@ -283,6 +304,7 @@ export class PlayerController {
     input: InputSnapshot,
     physics: PhysicsWorld,
     allowMovement = true,
+    allowJump = true,
   ): { isMoving: boolean; dashed: boolean; jumped: boolean; doubleJumped: boolean } {
     let isMoving = false;
     let dashed = false;
@@ -345,12 +367,13 @@ export class PlayerController {
       if (input.dashPressed && this.state.dashCooldown <= 0 && canDash) {
         this.state.dashCooldown = 1.15;
         this.dashTimer = 0.18;
+        this.dashSpeed = 23.5;
         this.dashDir.set(wishLen > 0.01 ? wishX : forwardX, 0, wishLen > 0.01 ? wishZ : forwardZ).normalize();
         dashed = true;
         this.addScreenShake(0.05);
       }
 
-      if (input.jumpPressed) {
+      if (allowJump && input.jumpPressed) {
         if (this.grounded) {
           this.velocity.y = 8.4;
           this.grounded = false;
@@ -371,8 +394,8 @@ export class PlayerController {
 
       if (this.dashTimer > 0) {
         this.dashTimer = Math.max(0, this.dashTimer - dt);
-        vx = this.dashDir.x * 23.5;
-        vz = this.dashDir.z * 23.5;
+        vx = this.dashDir.x * this.dashSpeed;
+        vz = this.dashDir.z * this.dashSpeed;
       }
 
       const targetX = this.position.x + vx * dt;
@@ -396,8 +419,18 @@ export class PlayerController {
         this.groundY,
       );
 
+      const ceilingY =
+        this.velocity.y > 0
+          ? physics.getCeilingY(this.position.x, this.position.z, this.radius, this.position.y, this.height)
+          : Number.POSITIVE_INFINITY;
+
       this.velocity.y -= 21.5 * dt;
       this.position.y += this.velocity.y * dt;
+
+      if (Number.isFinite(ceilingY) && this.position.y + this.height > ceilingY) {
+        this.position.y = Math.max(supportY, ceilingY - this.height);
+        this.velocity.y = Math.min(0, this.velocity.y);
+      }
 
       if (this.position.y <= supportY) {
         this.position.y = supportY;
@@ -500,12 +533,15 @@ export class PlayerController {
 
     const bobScale = THREE.MathUtils.lerp(1.0, 0.2, this.aimBlend);
     const bobY = isMoving && this.grounded ? Math.sin(this.headBobPhase) * 0.045 * bobScale : 0;
-    const bobX = isMoving && this.grounded ? Math.cos(this.headBobPhase * 0.5) * 0.025 * bobScale : 0;
+    const bobLat = isMoving && this.grounded ? Math.cos(this.headBobPhase * 0.5) * 0.025 * bobScale : 0;
+    const rightX = Math.cos(this.yaw);
+    const rightZ = -Math.sin(this.yaw);
+    const latOffset = bobLat + shakeX;
 
     this.camera.position.set(
-      this.position.x + bobX + shakeX,
+      this.position.x + rightX * latOffset,
       this.position.y + this.eyeHeight + bobY + shakeY,
-      this.position.z,
+      this.position.z + rightZ * latOffset,
     );
     this.camera.rotation.set(this.pitch + shakeY * 0.25, this.yaw + shakeX * 0.25, this.roll, 'YXZ');
   }

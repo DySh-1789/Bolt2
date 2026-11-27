@@ -89,4 +89,36 @@ describe('PhysicsWorld with Chunk Filtering & Vehicle Collisions', () => {
     const blocked = physics.resolveCylinderMove({ x: 0, y: 96, z: -37.2 }, 0, -35.0, 0.45, 96, 1.8);
     expect(blocked.collided).toBe(true);
   });
+
+  it('detects ceilings, checks cylinder clearance, finds nearest clear spawn, and toggles prefix colliders', () => {
+    const physics = new PhysicsWorld();
+    physics.addBox('room_ceil', 0, 3.6, 0, 8, 0.4, 8);
+    expect(physics.getCeilingY(0, 0, 0.45, 0, 1.8)).toBeCloseTo(3.4, 2);
+    expect(physics.getCeilingY(20, 0, 0.45, 0, 1.8)).toBe(Number.POSITIVE_INFINITY);
+
+    physics.addBox('bldg_block', 10, 5, 10, 8, 10, 8);
+    expect(physics.isCylinderFree(10, 10, 2.0, 0.2, 1.6)).toBe(false);
+    const clear = physics.findNearestClearPosition(10, 10, 2.0, 0.2, 1.6, { maxRadius: 20, step: 1.5 });
+    expect(clear.found).toBe(true);
+    expect(physics.isCylinderFree(clear.x, clear.z, 2.0, 0.2, 1.6)).toBe(true);
+
+    physics.setCollidersActiveByPrefix('bldg_', false);
+    expect(physics.isCylinderFree(10, 10, 2.0, 0.2, 1.6)).toBe(true);
+  });
+
+  it('keeps step-up height aligned with getSupportY (0.25m curb) and updates chunkKey in byChunk', () => {
+    const physics = new PhysicsWorld();
+    physics.addBox('curb', 0, 0.12, -5, 4, 0.24, 4);
+    expect(physics.getSupportY(0, -5, 0.45, 0, 0)).toBeCloseTo(0.24, 2);
+    const step = physics.resolveCylinderMove({ x: 0, y: 0, z: -8 }, 0, -5, 0.45, 0, 1.8);
+    expect(step.collided).toBe(false);
+    expect(step.z).toBeCloseTo(-5, 2);
+
+    physics.addBox('moving_prop', 0, 2, 0, 2, 4, 2, { chunkKey: '1,1' });
+    physics.addBox('moving_prop', 0, 2, 0, 2, 4, 2, { chunkKey: '2,2' });
+    physics.setActiveChunks(new Set(['1,1']));
+    expect(physics.isCylinderFree(0, 0, 0.45, 0, 1.8)).toBe(true);
+    physics.setActiveChunks(new Set(['2,2']));
+    expect(physics.isCylinderFree(0, 0, 0.45, 0, 1.8)).toBe(false);
+  });
 });

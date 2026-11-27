@@ -78,4 +78,35 @@ describe('PlayerState (Cyberware, Economy, and Ripperdoc Upgrades)', () => {
     // Mk.II drains at 15/sec -> 70% energy left after 2s
     expect(player.sandevistanEnergy).toBeCloseTo(70, 1);
   });
+
+  it('restores checkpoint vitals & magazines while preserving upgrades, tenge, and cred', () => {
+    const player = new PlayerState();
+    player.addTenge(2500);
+    player.streetCred = 9;
+    player.applyUpgrade('reinforcedPlating');
+    player.takeDamage(120, true);
+    player.maxDocCharges = 0;
+    player.sandevistanEnergy = 12;
+
+    player.restoreForCheckpoint();
+    expect(player.hp).toBe(player.maxHp);
+    expect(player.armor).toBe(player.maxArmor);
+    expect(player.sandevistanEnergy).toBe(100);
+    expect(player.maxDocCharges).toBeGreaterThanOrEqual(3);
+    expect(player.upgrades.reinforcedPlating).toBe(true);
+    expect(player.streetCred).toBe(9);
+
+    const arsenal = new ArsenalState();
+    arsenal.unlockWeapon('malorian', true);
+    arsenal.tryFire();
+    expect(arsenal.getAmmo()).toBe(7);
+    arsenal.refillAllMagazines();
+    expect(arsenal.getAmmo()).toBe(8);
+
+    // Overclocked Mantis lunge has shorter cooldown (1.05s vs 1.6s)
+    arsenal.equip('mantis_blades');
+    expect(arsenal.tryMantisLunge(true)).toBe(true);
+    arsenal.update(1.1);
+    expect(arsenal.tryMantisLunge(true)).toBe(true);
+  });
 });

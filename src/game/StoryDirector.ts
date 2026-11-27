@@ -129,6 +129,8 @@ export class StoryDirector {
 
   private elapsedTotal = 0;
   private lastDistrictId: DistrictId | null = null;
+  private wasNearMarum = false;
+  private wasCarNitroActive = false;
   private activeObjectivePos: Vec3 | null = null;
   private chaseDronesRemaining = 0;
   private chaseWaveSpawned = false;
@@ -138,6 +140,18 @@ export class StoryDirector {
   private chokeBeatTimer = 0;
   private targetLetterbox = 0;
   private pendingDeathRespawn = false;
+
+  // Deterministic one-shot cutscene & lunge state (no frame-rate-dependent time windows)
+  private penthouseChokeSfxFired = false;
+  private smasherExecShot1Fired = false;
+  private smasherExecShot2Fired = false;
+  private smasherExecShotTimer = 0;
+  private pendingAssaultTransition = false;
+  private assaultTransitionTimer = 0;
+  private assaultFadeTimer = 0;
+  private pendingCyberspaceEnding: 'marum' | 'taldykorgan' | null = null;
+  private cyberspaceFadeTimer = 0;
+  private pendingLungeHit: { timer: number; damage: number; range: number } | null = null;
 
   constructor(engine: Engine, viewport: HTMLElement) {
     this.engine = engine;
@@ -160,6 +174,7 @@ export class StoryDirector {
     this.hud = new HUD({
       onStartCampaign: () => this.startCampaign(),
       onStartFreeRoam: () => this.startFreeRoam(),
+      onContinuePostgame: () => this.continuePostgameFreeRoam(),
       onJumpToAct: (act) => this.jumpToAct(act),
       onResume: () => this.resumeGame(),
       onRestartCheckpoint: () => this.restartFromCheckpoint(),
@@ -168,6 +183,7 @@ export class StoryDirector {
       onVolumeChange: (v) => this.audio.setMasterVolume(v),
       onCensorToggle: (c) => {
         this.censoredDialogue = c;
+        this.hud.setCensored(c);
       },
       onChoiceSelect: (id) => this.handleChoiceSelection(id),
       onFastTravel: (dId) => this.fastTravelToDistrict(dId),
@@ -193,6 +209,10 @@ export class StoryDirector {
     if (this.currentLineTimer <= 0) {
       this.popNextDialogueLine();
     }
+  }
+
+  private isDialogueBusy(): boolean {
+    return this.currentLineTimer > 0.05 || this.dialogueQueue.length > 0;
   }
 
   private popNextDialogueLine(): void {
@@ -237,6 +257,7 @@ export class StoryDirector {
     this.activeChoiceContext = context;
     this.activeChoices = choices;
     this.awaitingChoice = true;
+    this.input.clearTransient();
     this.input.exitPointerLock();
     this.hud.showChoices(title, choices);
   }
@@ -254,11 +275,16 @@ export class StoryDirector {
     this.awaitingChoice = false;
     this.activeChoiceContext = 'NONE';
     this.targetLetterbox = 0;
+    this.pendingAssaultTransition = false;
+    this.pendingCyberspaceEnding = null;
+    this.pendingLungeHit = null;
     this.clearDialogueQueue();
+    this.input.clearTransient();
     this.input.exitPointerLock();
     this.weapons.setVisible(false);
     this.vehicle.setVisible(true);
     this.instances.setActiveInstance('NONE');
+    this.city.setMotelLocked(false);
     this.city.setStoryProps({
       samirRooftop: true,
       samirJunkyard: false,
@@ -296,6 +322,17 @@ export class StoryDirector {
     this.enterAct('OPEN_WORLD');
   }
 
+  /**
+   * Continues exploring Cyber-Almaty after the credits while preserving all player upgrades,
+   * unlocked weapons, tenge, street cred, completed gigs, and run stats.
+   */
+  continuePostgameFreeRoam(): void {
+    this.audio.ensureStarted();
+    this.player.state.restoreForCheckpoint();
+    this.weapons.state.refillAllMagazines();
+    this.enterAct('OPEN_WORLD');
+  }
+
   jumpToAct(act: GameAct): void {
     this.audio.ensureStarted();
     this.stats = createInitialRunStats();
@@ -324,6 +361,20 @@ export class StoryDirector {
     this.activeChoiceContext = 'NONE';
     this.activeChoices = [];
     this.targetLetterbox = 0;
+    this.penthouseChokeSfxFired = false;
+    this.smasherExecShot1Fired = false;
+    this.smasherExecShot2Fired = false;
+    this.smasherExecShotTimer = 0;
+    this.pendingAssaultTransition = false;
+    this.assaultTransitionTimer = 0;
+    this.assaultFadeTimer = 0;
+    this.pendingCyberspaceEnding = null;
+    this.cyberspaceFadeTimer = 0;
+    this.pendingLungeHit = null;
+    this.lastDistrictId = null;
+    this.wasNearMarum = false;
+    this.wasCarNitroActive = false;
+    this.input.clearTransient();
     this.clearDialogueQueue();
     this.audio.setPaused(false);
     this.audio.setSandevistanMode(false);
@@ -344,11 +395,18 @@ export class StoryDirector {
     this.vehicle.state.stopAutopilot();
     this.fx = createDefaultPostFx();
 
-    // Reset story interactables
+    // Gate city open-world interactables exclusively to OPEN_WORLD and reset story interactables
+    const enableCityHub = act === 'OPEN_WORLD';
+    this.city.setInteractableEnabled('ripperdoc_marum', enableCityHub);
+    this.city.setInteractableEnabled('gig_board_marum', enableCityHub);
+    this.city.setInteractableEnabled('rooftop_elevator_up', enableCityHub);
+    this.city.setInteractableEnabled('rooftop_elevator_down', enableCityHub);
+    this.city.setInteractableEnabled('rooftop_start_assault', enableCityHub);
     this.city.setInteractableEnabled('motel_sink', false);
-    this.city.setInteractableEnabled('marakulin_front_doors', false);
     this.city.setInteractableEnabled('gig_malorian_stash', false);
     this.city.setInteractableEnabled('gig_tastak_terminal', false);
+    this.city.setMotelLocked(act === 'TASTAK_BETRAYAL');
+
     this.instances.setInteractableEnabled('heist_steal_biochip', false);
     this.instances.setInteractableEnabled('heist_hide_closet', false);
     this.instances.setInteractableEnabled('heist_elevator_btn', false);
@@ -401,6 +459,7 @@ export class StoryDirector {
     // ACT 2: FLASHBACK HEIST (2 weeks ago — Rodion's 92nd-floor Penthouse 9201)
     // =========================================================================
     if (act === 'FLASHBACK_HEIST') {
+      this.instances.setPenthouseCorridorLocked(true);
       this.instances.setActiveInstance('PENTHOUSE');
       this.instances.penthouseElevator.reset();
       this.instances.penthouseRodion.group.visible = false;
@@ -508,6 +567,7 @@ export class StoryDirector {
         true,
       );
       this.setCheckpoint(act, -165, 0.25, -158, 0);
+      this.input.requestPointerLock();
       return;
     }
 
@@ -607,14 +667,19 @@ export class StoryDirector {
       this.weapons.setVisible(true);
       this.hud.setCrosshairVisible(true);
 
-      // Apply linear-nonlinear assault approach bonuses!
+      // Apply linear-nonlinear assault approach bonuses strictly matching the chosen plan!
       const bonuses = this.openWorld.getAssaultBonuses(this.player.state.streetCred);
       const approach = this.stats.assaultApproach;
-      if (approach === 'eblanhana' || bonuses.hasEblanhanaSupport) {
+      if (approach === 'eblanhana' && bonuses.hasEblanhanaSupport) {
         this.player.state.armor = this.player.state.maxArmor;
         this.player.state.maxDocCharges = Math.min(
           this.player.state.maxMaxDoc,
           this.player.state.maxDocCharges + 2,
+        );
+      } else if (approach === 'eblanhana') {
+        this.player.state.maxDocCharges = Math.min(
+          this.player.state.maxMaxDoc,
+          this.player.state.maxDocCharges + 1,
         );
       }
 
@@ -682,6 +747,7 @@ export class StoryDirector {
     // =========================================================================
     if (act === 'SMASHER_BOSS') {
       this.weapons.state.unlockWeapon('malorian', false);
+      this.instances.undergroundElevator.snapToArrived();
       this.instances.setActiveInstance('UNDERGROUND');
       this.instances.setSupplyCrateUsed('tower_supply_arena', false);
       this.chunks.forceRefresh(0, 0, false, this.physics);
@@ -693,7 +759,10 @@ export class StoryDirector {
       this.hud.setCrosshairVisible(true);
 
       this.smasher.activateAt(0, yCore, -70);
-      if (this.towerSecurityHacked || this.stats.assaultApproach === 'netrunner') {
+      const netrunnerWeakened =
+        this.towerSecurityHacked ||
+        (this.stats.assaultApproach === 'netrunner' && this.openWorld.hasNetrunnerIntel());
+      if (netrunnerWeakened) {
         this.smasher.setArmorWeakened(20);
       }
 
@@ -709,7 +778,7 @@ export class StoryDirector {
         5.2,
         true,
       );
-      if (this.towerSecurityHacked) {
+      if (netrunnerWeakened) {
         this.queueLine('samir', 'Отличный взлом, Аи — его энергощит искрит! Бей по голове и не стой на красных кругах!', 4.2);
       }
       this.setCheckpoint(act, 0, yCore, -34, 0);
@@ -722,6 +791,7 @@ export class StoryDirector {
     // =========================================================================
     if (act === 'HUYESHI_CYBERSPACE') {
       // Phase 0: Seated in Bolt-1-style Huyeshi Chair under descending Neural Crown & lasers!
+      this.instances.undergroundElevator.snapToArrived();
       this.instances.setActiveInstance('UNDERGROUND');
       this.instances.setHuyeshiExtraction(0);
       this.chunks.forceRefresh(0, 0, false, this.physics);
@@ -818,14 +888,16 @@ export class StoryDirector {
       );
       this.hud.showActBanner('ЭПИЛОГ II // ДОРОГА В ГОРОД-АД ТАЛДЫКОРГАН', 5.5);
       this.audio.setMusicIntensity('taldykorgan');
-      const farewell = getCyberspaceFarewellLines('taldykorgan', this.stats.samirAffinity, this.censoredDialogue);
-      for (let i = 0; i < farewell.length; i++) {
-        this.queueLine(farewell[i].speaker, farewell[i].text, farewell[i].duration, i === 0);
-      }
+      this.queueLine(
+        'system',
+        'Самир в теле Аи покидает неоновый Кибер-Алматы навстречу рассвету.',
+        4.6,
+        true,
+      );
       this.queueLine(
         'samir',
-        'Кибер-Алматы остаётся позади. Впереди — город-ад Талдыкорган. Прощай, Аи.',
-        5.2,
+        'Кибер-Алматы остаётся позади. Впереди — город-ад Талдыкорган. Я не подведу тебя, Аи. Прощай, брат.',
+        5.8,
       );
     }
   }
@@ -833,7 +905,9 @@ export class StoryDirector {
   private spawnOpenWorldEncounters(): void {
     for (const gig of OPEN_WORLD_GIGS) {
       const rt = this.openWorld.gigs.get(gig.id);
-      if (rt?.status === 'completed') continue;
+      const completed = rt?.status === 'completed';
+      this.city.setGigPropCompleted(gig.id, completed);
+      if (completed) continue;
       this.enemies.spawnWave(getGigEnemyWave(gig.id));
       if (gig.id === 'gig_malorian') {
         this.city.setInteractableEnabled('gig_malorian_stash', true);
@@ -875,7 +949,8 @@ export class StoryDirector {
       this.player.mode === 'ROOFTOP_SIT' ||
       this.player.mode === 'FALLEN' ||
       this.player.mode === 'EXECUTION' ||
-      this.player.mode === 'HUYESHI_CHAIR';
+      this.player.mode === 'HUYESHI_CHAIR' ||
+      this.player.mode === 'CHOKED';
 
     if (
       !locked &&
@@ -910,16 +985,24 @@ export class StoryDirector {
   private resumeGame(): void {
     this.paused = false;
     this.modalOpen = 'NONE';
+    this.input.clearTransient();
     this.audio.setPaused(false);
     this.hud.showScreen('HUD');
-    if (this.player.mode === 'FREE' && !this.awaitingChoice) {
+    const wantsLock =
+      this.player.mode === 'FREE' ||
+      this.player.mode === 'CHASE_PASSENGER' ||
+      this.player.mode === 'CLOSET' ||
+      this.player.mode === 'CHOKED' ||
+      this.player.mode === 'VEHICLE_THIRD';
+    if (wantsLock && !this.awaitingChoice) {
       this.input.requestPointerLock();
     }
   }
 
   private restartFromCheckpoint(): void {
-    this.player.state.hp = this.player.state.maxHp;
-    this.player.state.armor = this.player.state.maxArmor;
+    this.player.state.restoreForCheckpoint();
+    this.weapons.state.refillAllMagazines();
+    this.input.clearTransient();
     this.enterAct(this.checkpoint.act);
   }
 
@@ -928,7 +1011,7 @@ export class StoryDirector {
   }
 
   private toggleMapModal(): void {
-    if (this.stateMachine.act !== 'OPEN_WORLD') return;
+    if (this.stateMachine.act !== 'OPEN_WORLD' || this.awaitingChoice || this.pendingAssaultTransition) return;
     if (this.modalOpen === 'MAP') {
       this.closeModals();
       return;
@@ -936,6 +1019,7 @@ export class StoryDirector {
     this.modalOpen = 'MAP';
     this.paused = true;
     this.audio.setPaused(true);
+    this.input.clearTransient();
     this.input.exitPointerLock();
     this.hud.renderFullMap(
       this.player.position,
@@ -943,6 +1027,7 @@ export class StoryDirector {
       this.city.minimapBuildings,
       this.openWorld,
       this.activeObjectivePos,
+      this.enemies.getAlivePositions(),
     );
     this.hud.showScreen('MAP');
   }
@@ -951,6 +1036,7 @@ export class StoryDirector {
     this.modalOpen = 'RIPPERDOC';
     this.paused = true;
     this.audio.setPaused(true);
+    this.input.clearTransient();
     this.input.exitPointerLock();
     this.hud.renderRipperdoc(this.player.state, this.weapons.state.unlocked);
     this.hud.showScreen('RIPPERDOC');
@@ -959,12 +1045,24 @@ export class StoryDirector {
   private closeModals(): void {
     this.modalOpen = 'NONE';
     this.paused = false;
+    this.input.clearTransient();
     this.audio.setPaused(false);
     this.hud.showScreen('HUD');
-    this.input.requestPointerLock();
+    if (!this.awaitingChoice) {
+      this.input.requestPointerLock();
+    }
   }
 
   private buyRipperdocItem(item: RipperdocItem): void {
+    const alreadyOwned =
+      (item.weaponId && this.weapons.state.unlocked.has(item.weaponId)) ||
+      (item.upgradeKey && this.player.state.upgrades[item.upgradeKey]);
+    const alreadyFull =
+      item.category === 'consumable' &&
+      this.player.state.maxDocCharges >= this.player.state.maxMaxDoc &&
+      this.player.state.armor >= this.player.state.maxArmor;
+    if (alreadyOwned || alreadyFull) return;
+
     if (!this.player.state.spendTenge(item.cost)) return;
     if (item.category === 'weapon' && item.weaponId) {
       this.weapons.state.unlockWeapon(item.weaponId, true);
@@ -975,6 +1073,7 @@ export class StoryDirector {
     }
     this.audio.playPurchase();
     this.hud.renderRipperdoc(this.player.state, this.weapons.state.unlocked);
+    this.hud.updateVitals(this.player.state, this.weapons.state);
     this.queueLine('ripperdoc', `Отличный выбор, Аи! «${item.name}» откалиброван и готов к работе.`, 3.8, true);
   }
 
@@ -982,12 +1081,12 @@ export class StoryDirector {
     const dist = DISTRICTS.find((d) => d.id === districtId);
     if (!dist) return;
     this.vehicle.state.occupied = false;
-    this.vehicle.state.setPose(dist.fastTravelPos.x + 6, 0, dist.fastTravelPos.z, dist.fastTravelYaw);
-    this.vehicle.syncMesh();
+    this.vehicle.state.stopAutopilot();
+    this.chunks.forceRefresh(dist.fastTravelPos.x, dist.fastTravelPos.z, true, this.physics);
     this.player.teleport(dist.fastTravelPos.x, 0.25, dist.fastTravelPos.z, dist.fastTravelYaw, 0);
     this.player.setMode('FREE');
     this.weapons.setVisible(true);
-    this.chunks.forceRefresh(dist.fastTravelPos.x, dist.fastTravelPos.z, true, this.physics);
+    this.vehicle.summonNear(dist.fastTravelPos.x, dist.fastTravelPos.z, dist.fastTravelYaw, this.physics);
     this.audio.playCarHornOrSummon();
     this.closeModals();
     this.queueLine('akhmed', `Прибыли в район «${dist.name}», брат! Если понадоблюсь — зови на [C].`, 4.0, true);
@@ -1002,6 +1101,7 @@ export class StoryDirector {
       this.city.minimapBuildings,
       this.openWorld,
       this.activeObjectivePos,
+      this.enemies.getAlivePositions(),
     );
   }
 
@@ -1011,6 +1111,7 @@ export class StoryDirector {
     this.awaitingChoice = false;
     this.activeChoiceContext = 'NONE';
     this.activeChoices = [];
+    this.input.clearTransient();
     this.hud.hideChoices();
 
     // Apply affinity & queue branching response lines if defined
@@ -1044,32 +1145,36 @@ export class StoryDirector {
             : 'frontal';
       this.stats.assaultApproach = approach;
       this.audio.playHoloChime();
-      this.enterAct('TOWER_ASSAULT');
+      // Let queued rooftop plan dialogue play out cleanly before transitioning into Tower Assault
+      this.pendingAssaultTransition = true;
+      this.assaultTransitionTimer = 0;
+      this.assaultFadeTimer = 0;
       return;
     }
 
     if (ctx === 'SMASHER_EXECUTION') {
-      // Dramatic 3-shot Malorian S-3516 execution burst right into Smasher's visor!
+      // Let all 3 last-words dialogue lines play before pulling the Malorian trigger!
       this.stateMachine.subStep = 2;
       this.stateMachine.actTimer = 0;
+      this.smasherExecShot1Fired = false;
+      this.smasherExecShot2Fired = false;
+      this.smasherExecShotTimer = 0;
       this.weapons.state.unlockWeapon('malorian', true);
       this.weapons.setVisible(true);
-      this.weapons.triggerShotVisual();
-      this.audio.playMalorianShot();
-      this.audio.playExplosion(true);
-      this.audio.playTinnitus(2.0);
-      this.player.addScreenShake(0.45);
-      this.fx.chromaticBoost = 0.85;
-      this.fx.glitch = 0.6;
-      this.smasher.finishExecutionAnimation();
-      this.hud.setBossBar(false);
       return;
     }
 
     if (ctx === 'CYBERSPACE_ENDING') {
       const choice: 'marum' | 'taldykorgan' = choiceId === 'ending_taldykorgan' ? 'taldykorgan' : 'marum';
-      const next = this.stateMachine.selectFinaleEnding(choice);
-      this.enterAct(next);
+      // Append affinity-reactive Taisiya + Samir farewell lines right inside Cyberspace!
+      const farewell = getCyberspaceFarewellLines(choice, this.stats.samirAffinity, this.censoredDialogue);
+      for (const l of farewell) {
+        this.queueLine(l.speaker, l.text, l.duration, false);
+      }
+      this.pendingCyberspaceEnding = choice;
+      this.cyberspaceFadeTimer = 0;
+      this.stateMachine.subStep = 3;
+      this.stateMachine.actTimer = 0;
       return;
     }
 
@@ -1108,7 +1213,7 @@ export class StoryDirector {
       if (this.vehicle.state.occupied) {
         this.vehicle.state.occupied = false;
         this.vehicle.state.stopAutopilot();
-        const exit = this.vehicle.getExitPosition();
+        const exit = this.vehicle.getExitPosition(this.physics);
         this.player.teleport(exit.x, 0.25, exit.z, this.vehicle.state.yaw, 0);
         this.player.setMode('FREE');
         this.weapons.setVisible(true);
@@ -1228,6 +1333,7 @@ export class StoryDirector {
         this.instances.animatePenthouseMurder(0);
         this.stateMachine.subStep = 2;
         this.stateMachine.actTimer = 0;
+        this.penthouseChokeSfxFired = false;
         this.queueLine('lev', 'Родион, ты позоришь империю Маракулиных! Я отстраняю тебя от совета директоров!', 3.6, true);
         this.queueLine('rodion', 'Хватит, отец... Твоё время вышло. Вся мегакорпорация теперь принадлежит МНЕ!', 3.6);
         break;
@@ -1267,6 +1373,13 @@ export class StoryDirector {
       }
       case 'tower_supply_lobby':
       case 'tower_supply_arena': {
+        if (
+          this.player.state.maxDocCharges >= this.player.state.maxMaxDoc &&
+          this.player.state.armor >= this.player.state.maxArmor
+        ) {
+          this.queueLine('system', 'ЗАПАС MAXDOC И ТАКТИЧЕСКАЯ БРОНЯ УЖЕ ПОЛНЫ.', 2.4, true);
+          break;
+        }
         this.instances.setSupplyCrateUsed(target.id, true);
         this.player.state.refillSupplies();
         this.audio.playMaxDoc();
@@ -1307,7 +1420,7 @@ export class StoryDirector {
         this.hud.setCombatHudVisible(false);
         this.targetLetterbox = 0.65;
 
-        this.smasher.positionForExecution(this.player.position);
+        this.smasher.positionForExecution(this.player.position, this.physics);
         const headTarget = this.smasher.getHeadWorldPosition();
         this.player.setMode('EXECUTION');
         this.player.configureInteractiveCutscene(
@@ -1336,6 +1449,7 @@ export class StoryDirector {
   private completeGig(gigId: string): void {
     const def = this.openWorld.completeGig(gigId);
     if (!def) return;
+    this.city.setGigPropCompleted(gigId, true);
     this.player.state.addTenge(def.rewardTenge);
     this.player.state.streetCred += def.rewardCred;
     this.stats.gigsCompleted++;
@@ -1346,6 +1460,8 @@ export class StoryDirector {
   }
 
   private handleCombatInput(input: InputSnapshot): void {
+    if (this.awaitingChoice) return;
+
     // Allow breaking out of Motel Bodyguard Choke with LMB or F!
     if (this.stateMachine.act === 'TASTAK_BETRAYAL' && this.stateMachine.subStep === 2) {
       if (input.firePressed || input.meleePressed) {
@@ -1394,18 +1510,31 @@ export class StoryDirector {
       }
     }
 
-    // Mantis Blade Leap Attack on Right Click!
+    // Mantis Blade Leap Attack on Right Click (supports Boss lock-on & resolves strike on impact!)
     if (input.aimPressed && this.weapons.state.activeWeapon === 'mantis_blades') {
-      if (this.weapons.state.tryMantisLunge()) {
+      const overclock = this.player.state.upgrades.mantisOverclock;
+      if (this.weapons.state.tryMantisLunge(overclock)) {
         const eye = this.player.getEyePosition();
         const fwd = this.player.getForwardDirection();
-        const target = this.enemies.findNearestEnemyInCone(eye, fwd, 9.5);
-        const lungeDir = target ? target.sub(this.player.position).normalize() : fwd;
-        this.player.applyLungeImpulse(lungeDir, 22);
+        let target = this.enemies.findNearestEnemyInCone(eye, fwd, 9.5);
+        if (!target && this.stateMachine.act === 'SMASHER_BOSS') {
+          const phase = this.smasher.state.phase;
+          if (phase === 'PHASE_1' || phase === 'PHASE_2' || phase === 'PHASE_3') {
+            const bossPos = this.smasher.getPosition().clone();
+            bossPos.y += 1.4;
+            const toBoss = bossPos.clone().sub(eye);
+            const dist = toBoss.length();
+            if (dist <= 10.5 && dist > 0.1 && toBoss.normalize().dot(fwd) > 0.55) {
+              target = bossPos;
+            }
+          }
+        }
+        const lungeDir = target ? target.clone().sub(this.player.position).normalize() : fwd;
+        this.player.applyLungeImpulse(lungeDir, overclock ? 28 : 22, 0.16);
         this.weapons.triggerMantisSlashVisual(2);
         this.audio.playMantisSlash(true);
-        const dmg = this.player.state.upgrades.mantisOverclock ? 135 : 98;
-        this.resolveMeleeDamage(eye, fwd, 5.2, dmg);
+        const dmg = overclock ? 135 : 98;
+        this.pendingLungeHit = { timer: 0.14, damage: dmg, range: 5.4 };
       }
     }
 
@@ -1417,10 +1546,15 @@ export class StoryDirector {
         this.weapons.triggerFlameMeleeVisual(eye, fwd);
         this.audio.playFlameMelee();
         this.resolveMeleeDamage(eye, fwd, 4.6, 88);
-      } else {
+      } else if (this.weapons.state.activeWeapon === 'mantis_blades') {
         this.weapons.triggerMantisSlashVisual(2);
+        this.audio.playMantisSlash(true);
+        const dmg = this.player.state.upgrades.mantisOverclock ? 98 : 68;
+        this.resolveMeleeDamage(eye, fwd, 4.2, dmg);
+      } else {
+        this.weapons.triggerQuickMeleeVisual();
         this.audio.playMantisSlash(false);
-        this.resolveMeleeDamage(eye, fwd, 4.2, 68);
+        this.resolveMeleeDamage(eye, fwd, 3.8, 68);
       }
     }
 
@@ -1511,7 +1645,7 @@ export class StoryDirector {
   }
 
   private resolveMeleeDamage(eye: THREE.Vector3, fwd: THREE.Vector3, range: number, damage: number): void {
-    const hits = this.enemies.applyMeleeArc(eye, fwd, range, damage);
+    const hits = this.enemies.applyMeleeArc(eye, fwd, range, damage, this.physics);
     for (const h of hits) {
       this.hud.triggerHitmarker(false);
       this.audio.playHitMarker(false);
@@ -1521,7 +1655,7 @@ export class StoryDirector {
     }
 
     if (this.stateMachine.act === 'SMASHER_BOSS') {
-      const bHit = this.smasher.applyMeleeDamage(eye, range, damage);
+      const bHit = this.smasher.applyMeleeDamage(eye, range, damage, fwd, this.physics);
       if (bHit.hit) {
         this.hud.triggerHitmarker(false);
         this.audio.playHitMarker(false);
@@ -1604,11 +1738,14 @@ export class StoryDirector {
           getBranchChoices('rooftop_prologue', this.censoredDialogue),
         );
       } else if (this.stateMachine.subStep === 2) {
-        if (this.stateMachine.actTimer > 6.4) {
-          this.fx.glitch = Math.min(0.7, (this.stateMachine.actTimer - 6.4) * 0.7);
-          this.fx.blackout = Math.min(1, (this.stateMachine.actTimer - 6.4) / 1.4);
+        if ((!this.isDialogueBusy() && this.stateMachine.actTimer > 2.0) || this.stateMachine.actTimer > 16.5) {
+          this.stateMachine.subStep = 3;
+          this.stateMachine.actTimer = 0;
         }
-        if (this.stateMachine.actTimer > 7.9) {
+      } else if (this.stateMachine.subStep === 3) {
+        this.fx.glitch = Math.min(0.7, this.stateMachine.actTimer * 0.7);
+        this.fx.blackout = Math.min(1, this.stateMachine.actTimer / 1.4);
+        if (this.stateMachine.actTimer > 1.5) {
           this.enterAct('FLASHBACK_HEIST');
         }
       }
@@ -1619,13 +1756,15 @@ export class StoryDirector {
     if (act === 'FLASHBACK_HEIST') {
       if (this.stateMachine.subStep === 2) {
         this.instances.animatePenthouseMurder(this.stateMachine.actTimer);
-        if (this.stateMachine.actTimer > 4.2 && this.stateMachine.actTimer < 4.4) {
+        if (!this.penthouseChokeSfxFired && this.stateMachine.actTimer >= 4.2) {
+          this.penthouseChokeSfxFired = true;
           this.player.addScreenShake(0.14);
           this.audio.playPlayerHurt(true);
         }
         if (this.stateMachine.actTimer > 8.6) {
           this.instances.penthouseRodion.group.visible = false;
           this.instances.penthouseSmasherProp.visible = false;
+          this.instances.setPenthouseCorridorLocked(false);
           this.instances.setPenthouseSanzharState('corridor');
           this.targetLetterbox = 0;
           this.hud.setCombatHudVisible(true);
@@ -1797,8 +1936,22 @@ export class StoryDirector {
 
     // 6. OPEN WORLD CYBER-ALMATY (500x500m + Chunks + Cyber-Akhmed)
     if (act === 'OPEN_WORLD') {
-      if (input.summonCarPressed && !this.vehicle.state.occupied && this.player.position.y < 5) {
-        this.vehicle.summonNear(this.player.position.x, this.player.position.z, this.player.yaw);
+      if (this.pendingAssaultTransition) {
+        this.assaultTransitionTimer += dt;
+        if ((!this.isDialogueBusy() && this.assaultTransitionTimer > 1.8) || this.assaultTransitionTimer > 15.0) {
+          this.assaultFadeTimer += dt;
+          this.fx.glitch = Math.min(0.65, this.assaultFadeTimer * 0.65);
+          this.fx.blackout = Math.min(1, this.assaultFadeTimer / 1.2);
+          if (this.assaultFadeTimer >= 1.25) {
+            this.pendingAssaultTransition = false;
+            this.enterAct('TOWER_ASSAULT');
+          }
+        }
+        return;
+      }
+
+      if (input.summonCarPressed && !this.vehicle.state.occupied && this.player.position.y < 5 && !this.awaitingChoice) {
+        this.vehicle.summonNear(this.player.position.x, this.player.position.z, this.player.yaw, this.physics);
         this.audio.playCarHornOrSummon();
         this.queueLine('akhmed', 'Кибер-Ахмед подан прямо к бордюру! Садись на [E].', 3.4, true);
       }
@@ -1816,8 +1969,12 @@ export class StoryDirector {
         const vRes = this.vehicle.update(dt, input, this.physics);
         this.stats.distanceDrivenMeters += vRes.movedMeters;
         if (vRes.nitroActive) {
+          if (!this.wasCarNitroActive) {
+            this.audio.playCarNitro();
+          }
           this.fx.speedLines = Math.min(0.85, this.fx.speedLines + dt * 2.5);
         }
+        this.wasCarNitroActive = vRes.nitroActive;
         if (vRes.arrivedAutopilot) {
           this.audio.playCarHornOrSummon();
           this.queueLine('akhmed', 'Мы на месте, брат! Выходи на [E].', 3.4, true);
@@ -1826,6 +1983,10 @@ export class StoryDirector {
         this.player.yaw = this.vehicle.state.yaw;
         const rig = this.vehicle.getCameraRig();
         this.player.setExternalCamera(rig.pos, rig.lookAt, rig.fov);
+      } else if (Math.abs(this.vehicle.state.speed) > 0.05 || this.wasCarNitroActive) {
+        // Coast Cyber-Akhmed smoothly to a stop and extinguish nitro flames after player exits
+        this.vehicle.update(dt, input, this.physics);
+        this.wasCarNitroActive = false;
       }
 
       const district = getDistrictAt(this.player.position.x, this.player.position.z);
@@ -1836,7 +1997,12 @@ export class StoryDirector {
           const lines = DISTRICT_SAMIR_BANTER[district.id];
           this.queueLine('samir', lines[0], 5.0);
         }
-        const nearMarum = Math.hypot(this.player.position.x - -46, this.player.position.z - -40) < 16;
+      }
+      const nearMarum =
+        this.player.position.y < 7 &&
+        Math.hypot(this.player.position.x - -46, this.player.position.z - -40) < 15;
+      if (nearMarum !== this.wasNearMarum) {
+        this.wasNearMarum = nearMarum;
         this.audio.setMusicIntensity(nearMarum ? 'marum_lounge' : 'almaty_night');
       }
       return;
@@ -1864,13 +2030,32 @@ export class StoryDirector {
     // 8. SMASHER BOSS + INTERACTIVE EXECUTION CUTSCENE
     if (act === 'SMASHER_BOSS') {
       if (this.stateMachine.subStep === 2) {
-        // Post-execution cinematic beat before returning control to jack into Huyeshi
-        if (this.stateMachine.actTimer > 0.38 && this.stateMachine.actTimer < 0.45) {
+        // Wait for the 3 last-words dialogue lines, then fire deterministic 2-shot Malorian execution burst
+        if (!this.smasherExecShot1Fired) {
+          if ((!this.isDialogueBusy() && this.stateMachine.actTimer > 1.2) || this.stateMachine.actTimer > 11.5) {
+            this.smasherExecShot1Fired = true;
+            this.smasherExecShotTimer = 0;
+            this.weapons.triggerShotVisual();
+            this.audio.playMalorianShot();
+            this.audio.playExplosion(true);
+            this.audio.playTinnitus(2.0);
+            this.player.addScreenShake(0.45);
+            this.fx.chromaticBoost = 0.85;
+            this.fx.glitch = 0.6;
+            this.smasher.finishExecutionAnimation();
+            this.hud.setBossBar(false);
+          }
+          return;
+        }
+
+        this.smasherExecShotTimer += dt;
+        if (!this.smasherExecShot2Fired && this.smasherExecShotTimer >= 0.42) {
+          this.smasherExecShot2Fired = true;
           this.weapons.triggerShotVisual();
           this.audio.playMalorianShot();
           this.player.addScreenShake(0.28);
         }
-        if (this.stateMachine.actTimer > 2.4) {
+        if (this.smasherExecShotTimer >= 2.2) {
           this.stateMachine.subStep = 3;
           this.targetLetterbox = 0;
           this.hud.setCombatHudVisible(true);
@@ -1962,6 +2147,17 @@ export class StoryDirector {
           BRANCHING_CHOICES.cyberspace_ending.title,
           getBranchChoices('cyberspace_ending', this.censoredDialogue),
         );
+      } else if (this.stateMachine.subStep === 3 && this.pendingCyberspaceEnding) {
+        if ((!this.isDialogueBusy() && this.stateMachine.actTimer > 2.0) || this.stateMachine.actTimer > 24.0) {
+          this.cyberspaceFadeTimer += dt;
+          this.fx.blackout = Math.min(1, this.cyberspaceFadeTimer / 1.4);
+          if (this.cyberspaceFadeTimer >= 1.5) {
+            const choice = this.pendingCyberspaceEnding;
+            this.pendingCyberspaceEnding = null;
+            const next = this.stateMachine.selectFinaleEnding(choice);
+            this.enterAct(next);
+          }
+        }
       }
       return;
     }
@@ -2002,7 +2198,7 @@ export class StoryDirector {
 
     // 10B. EPILOGUE TALDYKORGAN
     if (act === 'EPILOGUE_TALDYKORGAN') {
-      if (this.stateMachine.actTimer > 11.5) {
+      if ((!this.isDialogueBusy() && this.stateMachine.actTimer > 6.5) || this.stateMachine.actTimer > 14.0) {
         this.stateMachine.transition('CREDITS');
         this.targetLetterbox = 0;
         this.input.exitPointerLock();
@@ -2042,15 +2238,22 @@ export class StoryDirector {
       }
     }
 
+    const controlsLockedByChoice = this.awaitingChoice || this.pendingAssaultTransition;
+
     // Cyberware abilities (with Bolt 1 Sandevistan pitch scaling!)
-    if (input.sandevistanPressed && this.player.mode === 'FREE') {
+    if (!controlsLockedByChoice && input.sandevistanPressed && this.player.mode === 'FREE') {
       const tRes = this.player.state.toggleSandevistan();
       if (tRes.changed) {
         this.audio.playSandevistan(tRes.active);
         this.audio.setSandevistanMode(tRes.active);
       }
     }
-    if (input.healPressed && this.player.state.useMaxDoc()) {
+    if (
+      !controlsLockedByChoice &&
+      input.healPressed &&
+      (this.player.mode === 'FREE' || this.player.mode === 'CHASE_PASSENGER') &&
+      this.player.state.useMaxDoc()
+    ) {
       this.audio.playMaxDoc();
     }
 
@@ -2062,19 +2265,49 @@ export class StoryDirector {
 
     const worldDt = dt * this.player.state.getWorldTimeScale();
 
+    const act = this.stateMachine.act;
+    const isRidingElevator =
+      (act === 'FLASHBACK_HEIST' && this.instances.penthouseElevator.state.isRideActive()) ||
+      (act === 'TOWER_ASSAULT' && this.instances.undergroundElevator.state.isRideActive());
+
     // Player movement & chunk streaming
-    const moveRes = this.player.update(dt, input, this.physics, !this.vehicle.state.occupied);
+    const moveRes = this.player.update(
+      dt,
+      input,
+      this.physics,
+      !this.vehicle.state.occupied && !controlsLockedByChoice,
+      !isRidingElevator,
+    );
     if (moveRes.dashed || moveRes.doubleJumped) {
       this.audio.playDash();
+    }
+
+    // Resolve delayed Mantis Blade lunge impact after player lunges forward into range
+    if (this.pendingLungeHit) {
+      this.pendingLungeHit.timer -= dt;
+      const eye = this.player.getEyePosition();
+      const fwd = this.player.getForwardDirection();
+      const closeTarget = this.enemies.findNearestEnemyInCone(eye, fwd, 2.7);
+      let closeBoss = false;
+      if (this.stateMachine.act === 'SMASHER_BOSS') {
+        const bp = this.smasher.getPosition();
+        closeBoss = Math.hypot(bp.x - this.player.position.x, bp.z - this.player.position.z) <= 3.1;
+      }
+      if (this.pendingLungeHit.timer <= 0 || closeTarget !== null || closeBoss) {
+        const hit = this.pendingLungeHit;
+        this.pendingLungeHit = null;
+        this.resolveMeleeDamage(eye, fwd, hit.range, hit.damage);
+      }
     }
 
     const inOpenWorld = this.stateMachine.isOpenWorldLike();
     this.chunks.update(this.player.position.x, this.player.position.z, inOpenWorld, this.physics);
 
     // Interactions
-    const nearest = this.player.mode === 'FREE' ? this.findNearestInteractable() : null;
+    const nearest = !controlsLockedByChoice && this.player.mode === 'FREE' ? this.findNearestInteractable() : null;
     let promptLabel: string | null = nearest?.label ?? null;
     if (
+      !controlsLockedByChoice &&
       !promptLabel &&
       this.stateMachine.act === 'OPEN_WORLD' &&
       !this.vehicle.state.occupied &&
@@ -2084,7 +2317,11 @@ export class StoryDirector {
       promptLabel = '[E] СЕСТЬ В ТАКСИ «КИБЕР-АХМЕД»';
     }
     this.hud.setInteractPrompt(promptLabel);
-    if (input.interactPressed && (this.player.mode === 'FREE' || this.vehicle.state.occupied)) {
+    if (
+      !controlsLockedByChoice &&
+      input.interactPressed &&
+      (this.player.mode === 'FREE' || this.vehicle.state.occupied)
+    ) {
       this.handleInteract(nearest);
     }
 
@@ -2113,7 +2350,9 @@ export class StoryDirector {
       return;
     }
 
-    this.city.update(this.elapsedTotal, this.player.position);
+    if (inOpenWorld) {
+      this.city.update(this.elapsedTotal, this.player.position);
+    }
     this.instances.update(worldDt, this.elapsedTotal);
 
     // Smooth Post-FX decay & cinema letterbox transition
@@ -2153,6 +2392,8 @@ export class StoryDirector {
   dispose(): void {
     this.input.dispose();
     this.weapons.dispose();
+    this.instances.dispose();
+    this.city.dispose();
     this.textures.dispose();
     this.audio.dispose();
   }

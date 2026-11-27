@@ -55,6 +55,14 @@ export class ElevatorState {
     this.displayFloor = this.config.startFloorLabel;
   }
 
+  snapToArrived(): void {
+    this.phase = 'ARRIVED';
+    this.currentY = this.config.endY;
+    this.doorOpen = 1;
+    this.progress = 1;
+    this.displayFloor = this.config.endFloorLabel;
+  }
+
   startRide(): boolean {
     if (this.phase !== 'IDLE_START') return false;
     this.phase = 'CLOSING';
@@ -148,8 +156,11 @@ export class ElevatorRig {
   private readonly physics: PhysicsWorld;
   private readonly frontDoorColliderId: string;
   private readonly backDoorColliderId: string;
+  private readonly ceilingColliderId: string;
   private readonly frontDoorCollider: AABB;
   private readonly backDoorCollider: AABB;
+  private readonly ceilingCollider: AABB;
+  private collidersEnabled = true;
 
   private readonly displayCanvas: HTMLCanvasElement;
   private readonly displayCtx: CanvasRenderingContext2D | null;
@@ -195,6 +206,7 @@ export class ElevatorRig {
 
     this.frontDoorColliderId = `${config.id}_door_front`;
     this.backDoorColliderId = `${config.id}_door_back`;
+    this.ceilingColliderId = `${config.id}_cabin_ceil`;
 
     const halfD = this.depth * 0.5;
     // Dynamic moving cabin door colliders on BOTH front (+Z) and back (-Z) of the cabin
@@ -217,6 +229,16 @@ export class ElevatorRig {
       this.cabinHeight + 0.4,
       0.42,
       { active: this.entrySide !== -1 },
+    );
+    this.ceilingCollider = this.physics.addBox(
+      this.ceilingColliderId,
+      config.centerX,
+      config.startY + this.cabinHeight + 0.2,
+      config.centerZ,
+      this.width + 0.2,
+      0.4,
+      this.depth + 0.2,
+      { active: true },
     );
 
     this.buildShaft();
@@ -588,8 +610,11 @@ export class ElevatorRig {
     this.cabinGroup.add(callBtn);
 
     // Live Digital Floor Display mounted high on the forward interior wall (-entrySide) facing the rider
+    const displayW = this.isPassThrough ? 2.25 : 2.55;
+    const displayH = this.isPassThrough ? 0.4 : 0.92;
+    const displayY = this.isPassThrough ? h - 0.22 : h - 0.56;
     const displayPanel = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.55, 0.92),
+      new THREE.PlaneGeometry(displayW, displayH),
       new THREE.MeshStandardMaterial({
         map: this.displayTex,
         emissiveMap: this.displayTex,
@@ -599,7 +624,7 @@ export class ElevatorRig {
       }),
     );
     const displayZ = -this.entrySide * (halfD - 0.24);
-    displayPanel.position.set(0, h - 0.56, displayZ);
+    displayPanel.position.set(0, displayY, displayZ);
     displayPanel.rotation.y = this.entrySide === 1 ? 0 : Math.PI;
     this.cabinGroup.add(displayPanel);
   }
@@ -704,11 +729,23 @@ export class ElevatorRig {
     const minY = y - 0.2;
     const maxY = y + this.cabinHeight + 0.2;
 
-    // Update dynamic cabin door AABBs directly every frame to track cabin Y
+    // Update dynamic cabin door & ceiling AABBs directly every frame to track cabin Y
     this.frontDoorCollider.minY = minY;
     this.frontDoorCollider.maxY = maxY;
     this.backDoorCollider.minY = minY;
     this.backDoorCollider.maxY = maxY;
+    this.ceilingCollider.minY = y + this.cabinHeight;
+    this.ceilingCollider.maxY = y + this.cabinHeight + 0.4;
+
+    if (!this.collidersEnabled) {
+      this.frontDoorCollider.active = false;
+      this.backDoorCollider.active = false;
+      this.ceilingCollider.active = false;
+      this.physics.setActive(this.frontDoorColliderId, false);
+      this.physics.setActive(this.backDoorColliderId, false);
+      this.physics.setActive(this.ceilingColliderId, false);
+      return;
+    }
 
     const phase = this.state.phase;
     let frontActive = true;
@@ -730,8 +767,16 @@ export class ElevatorRig {
 
     this.frontDoorCollider.active = frontActive;
     this.backDoorCollider.active = backActive;
+    this.ceilingCollider.active = true;
     this.physics.setActive(this.frontDoorColliderId, frontActive);
     this.physics.setActive(this.backDoorColliderId, backActive);
+    this.physics.setActive(this.ceilingColliderId, true);
+  }
+
+  setCollidersActive(active: boolean): void {
+    this.collidersEnabled = active;
+    this.physics.setCollidersActiveByPrefix(`${this.state.config.id}_`, active);
+    this.syncColliders();
   }
 
   isPlayerInside(px: number, pz: number): boolean {
@@ -748,11 +793,21 @@ export class ElevatorRig {
     this.syncVisuals();
   }
 
+  snapToArrived(): void {
+    this.state.snapToArrived();
+    this.syncColliders();
+    this.syncVisuals();
+  }
+
   update(dt: number): ElevatorStepResult {
     const res = this.state.step(dt);
     this.syncColliders();
     this.syncVisuals();
     return res;
+  }
+
+  dispose(): void {
+    this.displayTex.dispose();
   }
 
   private syncVisuals(): void {

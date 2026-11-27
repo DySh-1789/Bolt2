@@ -220,10 +220,18 @@ export class ArsenalState {
     return { fired: true, needReload: false, comboStep: 0 };
   }
 
-  tryMantisLunge(): boolean {
+  refillAllMagazines(): void {
+    for (const id of WEAPON_ORDER) {
+      this.ammoByWeapon[id] = WEAPON_SPECS[id].magSize;
+    }
+    this.reloading = false;
+    this.reloadTimer = 0;
+  }
+
+  tryMantisLunge(overclocked = false): boolean {
     if (this.activeWeapon !== 'mantis_blades' || this.lungeCooldown > 0) return false;
-    this.lungeCooldown = 1.6;
-    this.fireCooldown = 0.32;
+    this.lungeCooldown = overclocked ? 1.05 : 1.6;
+    this.fireCooldown = overclocked ? 0.24 : 0.32;
     return true;
   }
 
@@ -519,9 +527,15 @@ export class WeaponSystem {
   }
 
   getMuzzleWorldPosition(): THREE.Vector3 {
+    this.gunPivot.updateWorldMatrix(true, false);
     const p = new THREE.Vector3(0, 0.05, -0.5);
     this.gunPivot.localToWorld(p);
     return p;
+  }
+
+  triggerQuickMeleeVisual(): void {
+    this.flameMeleeTimer = 0.32;
+    this.recoilKick = -0.14;
   }
 
   spawnTracer(start: THREE.Vector3, end: THREE.Vector3, colorHex = 0xffee77): void {
@@ -682,7 +696,7 @@ export class WeaponSystem {
       fl.group.position.addScaledVector(fl.velocity, dt);
       fl.group.scale.addScalar(dt * 3.8);
       if (fl.life <= 0) {
-        this.scene.remove(fl.group);
+        this.disposeFlameGroup(fl.group);
         this.flames.splice(i, 1);
       }
     }
@@ -690,7 +704,32 @@ export class WeaponSystem {
     return res;
   }
 
+  private disposeFlameGroup(group: THREE.Group): void {
+    this.scene.remove(group);
+    group.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry.dispose();
+        if (Array.isArray(obj.material)) {
+          obj.material.forEach((m) => m.dispose());
+        } else {
+          obj.material.dispose();
+        }
+      }
+    });
+  }
+
   dispose(): void {
+    for (const tr of this.tracers) {
+      this.scene.remove(tr.line);
+      tr.line.geometry.dispose();
+      (tr.line.material as THREE.Material).dispose();
+    }
+    this.tracers = [];
+    for (const fl of this.flames) {
+      this.disposeFlameGroup(fl.group);
+    }
+    this.flames = [];
+    this.camera.remove(this.muzzleLight);
     this.camera.remove(this.viewModel);
   }
 }

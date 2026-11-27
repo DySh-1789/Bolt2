@@ -26,6 +26,7 @@ export interface EnemyInstance {
   group: THREE.Group;
   bodyHitbox: THREE.Mesh;
   headHitbox: THREE.Mesh;
+  legsHitbox?: THREE.Mesh;
   shootCooldown: number;
   strafeDir: number;
   strafeTimer: number;
@@ -139,6 +140,7 @@ export class EnemyManager {
 
     let bodyHitbox: THREE.Mesh;
     let headHitbox: THREE.Mesh;
+    let legsHitbox: THREE.Mesh | undefined;
 
     if (cfg.archetype === 'drone') {
       // Generous OctahedronGeometry(0.75, 1) hull + prominent glowing eye so taxi-chase hits feel snappy & fair
@@ -196,12 +198,17 @@ export class EnemyManager {
 
       bodyHitbox = torso;
       headHitbox = head;
+      legsHitbox = legs;
     }
 
     bodyHitbox.userData.enemyId = cfg.id;
     bodyHitbox.userData.isHead = false;
     headHitbox.userData.enemyId = cfg.id;
     headHitbox.userData.isHead = true;
+    if (legsHitbox) {
+      legsHitbox.userData.enemyId = cfg.id;
+      legsHitbox.userData.isHead = false;
+    }
 
     this.scene.add(group);
     const maxHp = cfg.hp ?? spec.hp;
@@ -219,6 +226,7 @@ export class EnemyManager {
       group,
       bodyHitbox,
       headHitbox,
+      legsHitbox,
       shootCooldown: 0.7 + Math.random() * 0.9,
       strafeDir: Math.random() > 0.5 ? 1 : -1,
       strafeTimer: 1.5 + Math.random() * 2,
@@ -270,7 +278,9 @@ export class EnemyManager {
     const targets: THREE.Object3D[] = [];
     for (const e of this.enemies) {
       if (!e.alive) continue;
+      e.group.updateMatrixWorld(true);
       targets.push(e.headHitbox, e.bodyHitbox);
+      if (e.legsHitbox) targets.push(e.legsHitbox);
     }
 
     if (targets.length === 0) {
@@ -348,6 +358,7 @@ export class EnemyManager {
     forward: THREE.Vector3,
     range: number,
     damage: number,
+    physics?: PhysicsWorld,
   ): Array<{ enemyId: string; zoneId: string; killed: boolean; rewardTenge: number; point: THREE.Vector3 }> {
     const results: Array<{ enemyId: string; zoneId: string; killed: boolean; rewardTenge: number; point: THREE.Vector3 }> = [];
     for (const e of this.enemies) {
@@ -358,6 +369,7 @@ export class EnemyManager {
       if (dist > range) continue;
       toEnemy.normalize();
       if (toEnemy.dot(forward) < 0.35 && dist > 1.8) continue;
+      if (physics && !physics.hasLineOfSight(origin, center)) continue;
 
       const killed = this.applyDamageToEnemy(e, damage, center);
       results.push({
@@ -508,8 +520,16 @@ export class EnemyManager {
         const vz = (dirZ * moveToward + perpZ * 0.55) * spec.speed;
 
         if (e.archetype === 'drone') {
-          e.position.x += vx * dt;
-          e.position.z += vz * dt;
+          const res = physics.resolveCylinderMove(
+            e.position,
+            e.position.x + vx * dt,
+            e.position.z + vz * dt,
+            0.75,
+            e.position.y + 1.6,
+            1.4,
+          );
+          e.position.x = res.x;
+          e.position.z = res.z;
           e.position.y = e.baseY + Math.sin(performance.now() * 0.004 + i) * 0.35;
         } else {
           const res = physics.resolveCylinderMove(
@@ -590,10 +610,32 @@ export class EnemyManager {
       }
 
       const wallHit = physics.raycastBullets(b.mesh.position, this.tmpStepDir, stepDist);
+
+      // Swept segment-to-player cylinder check so bullets neither tunnel nor pierce solid cover
+      const segDx = this.tmpNextPos.x - b.mesh.position.x;
+      const segDz = this.tmpNextPos.z - b.mesh.position.z;
+      const segLenSq2D = segDx * segDx + segDz * segDz;
+      const tProj =
+        segLenSq2D > 1e-8
+          ? Math.max(
+              0,
+              Math.min(
+                1,
+                ((playerPos.x - b.mesh.position.x) * segDx + (playerPos.z - b.mesh.position.z) * segDz) /
+                  segLenSq2D,
+              ),
+            )
+          : 1;
+      const closestX = b.mesh.position.x + segDx * tProj;
+      const closestY = b.mesh.position.y + (this.tmpNextPos.y - b.mesh.position.y) * tProj;
+      const closestZ = b.mesh.position.z + segDz * tProj;
+      const distAlongStep = tProj * stepDist;
+
       const hitPlayer =
-        Math.hypot(this.tmpNextPos.x - playerPos.x, this.tmpNextPos.z - playerPos.z) < 0.72 &&
-        this.tmpNextPos.y >= playerPos.y &&
-        this.tmpNextPos.y <= playerPos.y + 1.95;
+        Math.hypot(closestX - playerPos.x, closestZ - playerPos.z) < 0.72 &&
+        closestY >= playerPos.y &&
+        closestY <= playerPos.y + 1.95 &&
+        (!wallHit.hit || distAlongStep <= wallHit.distance);
 
       if (hitPlayer) {
         const scaledDamage =
